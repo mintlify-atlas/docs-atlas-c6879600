@@ -1,0 +1,378 @@
+---
+title: "ElevenLabs Scribe Integration"
+description: "High-accuracy speech-to-text transcription for voice journaling"
+---
+
+## Overview
+
+The ElevenLabs Scribe integration provides professional-grade speech-to-text transcription for voice recordings. It powers the core voice journaling feature, converting audio into text with high accuracy and support for multiple audio formats.
+
+## API Integration
+
+The transcription service is implemented in `/app/api/ai/transcribe/route.ts` using the ElevenLabs JavaScript SDK.
+
+### Endpoint
+
+```
+POST /api/ai/transcribe
+```
+
+**Authentication**: Bearer token required
+
+### Request Format
+
+```typescript
+const formData = new FormData();
+formData.append('file', audioBlob);
+
+const response = await fetch('/api/ai/transcribe', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+  },
+  body: formData,
+});
+
+const { text } = await response.json();
+```
+
+### Response Format
+
+**Success (200)**
+```json
+{
+  "text": "Transcribed text from the audio recording..."
+}
+```
+
+**Error (400/422/500/502)**
+```json
+{
+  "error": "Human-readable error message"
+}
+```
+
+## Audio Format Requirements
+
+### Supported Formats
+
+- **WebM** (audio/webm, video/webm)
+- **WAV** (audio/wav)
+- **MP3** (audio/mp3, audio/mpeg)
+- **OGG** (audio/ogg)
+- **FLAC** (audio/flac)
+- **M4A** (audio/m4a, audio/mp4, audio/x-m4a)
+- **AAC** (audio/aac)
+
+<Info>
+WebM is the default format used by the browser's MediaRecorder API in eStory's voice recording feature.
+</Info>
+
+### File Size Limits
+
+- **Maximum**: 25 MB
+- **Recommended**: Keep recordings under 10 minutes for optimal performance
+
+```typescript
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+
+if (file.size > MAX_FILE_SIZE) {
+  return NextResponse.json(
+    { error: "File too large. Maximum size is 25MB." },
+    { status: 400 }
+  );
+}
+```
+
+## Implementation Details
+
+### SDK Configuration
+
+The ElevenLabs client is lazily initialized to avoid build-time failures:
+
+```typescript
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+
+let _client: ElevenLabsClient | null = null;
+
+function getClient(): ElevenLabsClient {
+  if (!_client) {
+    _client = new ElevenLabsClient({ 
+      apiKey: process.env.ELEVENLABS_API_KEY 
+    });
+  }
+  return _client;
+}
+```
+
+<Note>
+Never initialize Supabase or API clients at module scope—use lazy factory patterns to ensure env vars are available at runtime.
+</Note>
+
+### Transcription Call
+
+The API uses the **Scribe v1** model with audio event tagging:
+
+```typescript
+const client = getClient();
+const transcription = await client.speechToText.convert({
+  file: audioBlob,
+  modelId: "scribe_v1",
+  tagAudioEvents: true,      // Detects [laughter], [music], etc.
+  languageCode: "eng",        // English
+  diarize: false,             // Single speaker (journal entries)
+});
+
+const text = transcription.text || '';
+```
+
+### Response Handling
+
+The SDK v2.26+ returns a union type, so we extract the text safely:
+
+```typescript
+const responseText = 
+  (transcription as { text?: string }).text ||
+  (typeof transcription === 'string' ? transcription : '');
+
+if (!responseText) {
+  return NextResponse.json(
+    { error: "Transcription returned empty result. Please try again." },
+    { status: 422 }
+  );
+}
+```
+
+## Error Handling
+
+### Validation Errors (400)
+
+- No audio file provided
+- File too large (>25 MB)
+- Invalid file type (not audio)
+
+### Processing Errors (422)
+
+- Empty transcription result
+- Malformed audio file
+
+### Authentication Errors (502)
+
+- Invalid API key
+- Unauthorized request to ElevenLabs
+
+```typescript
+if (message.includes("api_key") || message.includes("Unauthorized")) {
+  return NextResponse.json(
+    { error: "Transcription service authentication failed." },
+    { status: 502 }
+  );
+}
+```
+
+### Server Errors (500)
+
+- ElevenLabs API timeout
+- Network failures
+- Unexpected SDK errors
+
+<Note>
+Error messages never leak internal details—only generic user-facing messages are returned.
+</Note>
+
+## Security
+
+The transcription endpoint follows eStory's layered security model:
+
+```
+Layer 4: No ownership check (user transcribes their own recordings)
+Layer 3: Input validation (file size, MIME type)
+Layer 2: Bearer token auth (validateAuthOrReject)
+Layer 1: Rate limiting (10 req/min for AI routes)
+Layer 0: Security headers (CSP, X-Frame-Options)
+```
+
+### Authentication
+
+```typescript
+import { validateAuthOrReject, isAuthError } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  const authResult = await validateAuthOrReject(req);
+  if (isAuthError(authResult)) return authResult;
+  
+  // Authenticated user ID available as: authResult
+  // ...
+}
+```
+
+### Rate Limiting
+
+AI routes are limited to **10 requests per minute** per user (configured in `middleware.ts`).
+
+## Accuracy & Quality
+
+### Transcription Model
+
+**Scribe v1** is optimized for:
+- Natural conversational speech
+- Personal narratives and journaling
+- English language (expandable to other languages)
+
+### Audio Event Detection
+
+With `tagAudioEvents: true`, the transcription includes:
+- `[laughter]`
+- `[music]`
+- `[applause]`
+- `[silence]`
+
+These tags help preserve context in journal entries.
+
+### Best Practices for Accuracy
+
+1. **Quiet Environment**: Minimize background noise
+2. **Clear Speech**: Speak at a natural, moderate pace
+3. **Quality Microphone**: Use device's primary microphone
+4. **Short Segments**: Break long recordings into under 10 min chunks
+
+## Usage in Record Page
+
+The transcription service is called automatically after voice recording:
+
+```typescript
+// RecordPageClient.tsx
+const handleTranscribe = async (audioBlob: Blob) => {
+  setIsTranscribing(true);
+  
+  try {
+    const formData = new FormData();
+    formData.append('file', audioBlob);
+    
+    const response = await fetch('/api/ai/transcribe', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData,
+    });
+    
+    if (!response.ok) throw new Error('Transcription failed');
+    
+    const { text } = await response.json();
+    setStoryText(text);
+  } catch (error) {
+    toast.error('Failed to transcribe audio');
+  } finally {
+    setIsTranscribing(false);
+  }
+};
+```
+
+### Loading States
+
+The record page uses **separate loading states** for each operation:
+
+- `isTranscribing`: ElevenLabs transcription in progress
+- `isEnhancing`: AI text enhancement in progress
+- `isSaving`: Cloud save + vault save in progress
+- `isBusy = isTranscribing || isEnhancing || isSaving`: Disables all inputs
+
+<Info>
+The save button spinner only shows during `isSaving`, not during transcription or enhancement.
+</Info>
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# .env.local
+ELEVENLABS_API_KEY=sk_...
+```
+
+Get your API key from the [ElevenLabs Dashboard](https://elevenlabs.io/app/settings/api-keys).
+
+### SDK Version
+
+```json
+// package.json
+{
+  "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.26.0"
+  }
+}
+```
+
+## Cost Optimization
+
+### Per-Request Costs
+
+ElevenLabs charges based on:
+- Audio duration (per minute)
+- Model used (Scribe v1)
+
+### Optimization Strategies
+
+1. **Client-Side Silence Detection**: Trim silent segments before upload
+2. **Audio Compression**: Use efficient codecs (WebM with Opus)
+3. **Rate Limiting**: Prevent abuse via middleware
+4. **Caching**: Store transcriptions in database to avoid re-processing
+
+## Testing
+
+### Manual Testing
+
+```bash
+# Test transcription endpoint
+curl -X POST http://localhost:3000/api/ai/transcribe \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "file=@test-audio.webm"
+```
+
+### Unit Tests
+
+Mock the ElevenLabs client in tests:
+
+```typescript
+vi.mock('@elevenlabs/elevenlabs-js', () => ({
+  ElevenLabsClient: vi.fn(() => ({
+    speechToText: {
+      convert: vi.fn().mockResolvedValue({ 
+        text: 'Mocked transcription' 
+      }),
+    },
+  })),
+}));
+```
+
+## Troubleshooting
+
+### Empty Transcription Results
+
+**Causes**:
+- Audio file is corrupted
+- Silent audio (no speech detected)
+- Unsupported codec
+
+**Solution**: Check audio file integrity and ensure it contains audible speech.
+
+### 502 Authentication Errors
+
+**Causes**:
+- Invalid `ELEVENLABS_API_KEY`
+- API key quota exceeded
+
+**Solution**: Verify API key in dashboard and check usage limits.
+
+### File Size Errors
+
+**Causes**:
+- Recording exceeds 25 MB
+- High-quality audio format (WAV)
+
+**Solution**: Use compressed formats (WebM/MP3) or split long recordings.
+
+## References
+
+- [ElevenLabs Scribe Documentation](https://elevenlabs.io/docs/api-reference/speech-to-text)
+- [Transcription API Endpoint](/api/ai/transcribe)
+- [ElevenLabs SDK GitHub](https://github.com/elevenlabs/elevenlabs-js)

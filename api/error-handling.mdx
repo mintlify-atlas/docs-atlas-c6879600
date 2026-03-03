@@ -1,0 +1,592 @@
+---
+title: "Error Handling"
+description: "How to handle API errors in eStory"
+---
+
+## Overview
+
+eStory's API uses **consistent error response formats** and **HTTP status codes** to communicate errors. All error messages are sanitized to prevent leaking internal details.
+
+## Error Response Format
+
+All error responses follow this structure:
+
+```json
+{
+  "error": "Human-readable error message"
+}
+```
+
+With optional error code:
+
+```json
+{
+  "error": "Story already verified",
+  "code": "ALREADY_VERIFIED"
+}
+```
+
+<Warning>
+  Error messages **never leak internal details**. Stack traces, database errors, and environment variables are logged server-side but never returned to clients.
+</Warning>
+
+## HTTP Status Codes
+
+### 400 Bad Request
+
+Invalid input or missing required fields.
+
+**Common causes:**
+- Missing required fields
+- Invalid field types or formats
+- Content length violations
+- Invalid MIME types
+
+**Example responses:**
+
+```json
+// Missing required field
+{
+  "error": "Missing required fields: storyId and storyText"
+}
+
+// Content too short
+{
+  "error": "Story text must be at least 50 characters"
+}
+
+// Invalid file type
+{
+  "error": "Invalid file type. Only audio files are allowed."
+}
+```
+
+**How to fix:**
+- Validate input on the client before sending
+- Check required fields in your request payload
+- Review endpoint documentation for field requirements
+
+### 401 Unauthorized
+
+Missing or invalid authentication token.
+
+**Common causes:**
+- No `Authorization` header
+- Invalid JWT token
+- Expired token
+- Malformed Bearer token format
+
+**Example response:**
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+**How to fix:**
+
+```javascript
+// Ensure you include the Authorization header
+const response = await fetch('/api/stories', {
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  }
+});
+
+if (response.status === 401) {
+  // Token is invalid or expired
+  // Redirect to login or refresh token
+  window.location.href = '/login';
+}
+```
+
+### 403 Forbidden
+
+User is authenticated but lacks permission to access the resource.
+
+**Common causes:**
+- Attempting to modify another user's resources
+- Wallet address mismatch
+- Insufficient permissions
+
+**Example responses:**
+
+```json
+// Ownership violation
+{
+  "error": "Forbidden"
+}
+
+// Wallet mismatch
+{
+  "error": "Wallet mismatch"
+}
+```
+
+**How to fix:**
+- Verify you own the resource (story, book, etc.)
+- Check that the authenticated user matches the resource owner
+- Ensure wallet address matches the user's linked wallet
+
+### 404 Not Found
+
+The requested resource does not exist.
+
+**Common causes:**
+- Invalid story ID, book ID, or user ID
+- Resource was deleted
+- Typo in endpoint URL
+
+**Example responses:**
+
+```json
+// Story not found
+{
+  "error": "Story not found"
+}
+
+// User not found
+{
+  "error": "User not found"
+}
+```
+
+**How to fix:**
+- Verify the resource ID is correct
+- Check that the resource hasn't been deleted
+- Handle 404s gracefully with fallback UI
+
+### 409 Conflict
+
+Operation conflicts with current state or resource already exists.
+
+**Common causes:**
+- Duplicate resource creation
+- Concurrent operations on the same resource
+- Resource already in a terminal state
+
+**Example responses:**
+
+```json
+// Already verified
+{
+  "error": "Story already verified"
+}
+
+// Analysis in progress
+{
+  "error": "Analysis already in progress for this story"
+}
+
+// Duplicate nonce
+{
+  "error": "Nonce already used"
+}
+```
+
+**How to fix:**
+- Check resource state before attempting operation
+- Implement client-side duplicate detection
+- Handle conflicts gracefully (e.g., "Already verified" is not necessarily an error)
+
+### 429 Too Many Requests
+
+Rate limit exceeded.
+
+**Example response:**
+
+```json
+{
+  "error": "Too many requests. Please try again later."
+}
+```
+
+**Response headers:**
+
+```http
+Retry-After: 42
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 0
+```
+
+**How to fix:**
+
+```javascript
+async function callAPIWithRetry(url, options) {
+  const response = await fetch(url, options);
+  
+  if (response.status === 429) {
+    const retryAfter = parseInt(response.headers.get('Retry-After') || '60', 10);
+    console.warn(`Rate limited. Waiting ${retryAfter}s...`);
+    
+    await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+    return callAPIWithRetry(url, options); // Retry
+  }
+  
+  return response.json();
+}
+```
+
+See [Rate Limits](/api/rate-limits) for more details.
+
+### 500 Internal Server Error
+
+Unexpected server error.
+
+**Common causes:**
+- Database connection failure
+- Third-party API failure (Gemini, ElevenLabs, etc.)
+- Unhandled exceptions
+- Configuration errors (missing env vars)
+
+**Example response:**
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+<Note>
+  500 errors **never expose internal details**. Error messages are generic, but detailed logs are available server-side for debugging.
+</Note>
+
+**How to fix:**
+- Retry the request (may be transient)
+- Check server status/logs
+- Contact support if persistent
+
+## Error Sanitization
+
+All API routes follow this error handling pattern:
+
+```typescript
+import { NextRequest, NextResponse } from "next/server";
+
+export async function POST(req: NextRequest) {
+  try {
+    // Route logic
+  } catch (error) {
+    // Log the real error server-side
+    console.error("[API_ROUTE] Error:", error);
+    
+    // Return generic error to client
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+**Never do this:**
+
+```typescript
+// BAD: Leaks internal details
+return NextResponse.json(
+  { error: error.message }, // May expose database errors, stack traces, etc.
+  { status: 500 }
+);
+```
+
+**Always do this:**
+
+```typescript
+// GOOD: Generic message, detailed logging
+console.error("[API_ROUTE] Error:", error); // Server-side only
+return NextResponse.json(
+  { error: "Internal server error" }, // Generic message
+  { status: 500 }
+);
+```
+
+## Client-Side Error Handling
+
+### Basic Pattern
+
+```javascript
+async function callAPI(endpoint, options) {
+  try {
+    const response = await fetch(endpoint, options);
+    const data = await response.json();
+    
+    if (!response.ok) {
+      // Handle HTTP error
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('API call failed:', error);
+    throw error;
+  }
+}
+```
+
+### React Hook Example
+
+```typescript
+import { useState } from 'react';
+import { toast } from 'sonner';
+
+function useAPI() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  const callAPI = async (endpoint: string, options: RequestInit) => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(endpoint, options);
+      const data = await response.json();
+      
+      if (!response.ok) {
+        // Handle specific status codes
+        if (response.status === 401) {
+          toast.error('Session expired. Please log in again.');
+          window.location.href = '/login';
+          return;
+        }
+        
+        if (response.status === 403) {
+          toast.error('You do not have permission to perform this action.');
+          return;
+        }
+        
+        if (response.status === 429) {
+          const retryAfter = response.headers.get('Retry-After');
+          toast.error(`Rate limited. Try again in ${retryAfter} seconds.`);
+          return;
+        }
+        
+        // Generic error
+        throw new Error(data.error || 'Something went wrong');
+      }
+      
+      return data;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Network error';
+      setError(message);
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  return { callAPI, loading, error };
+}
+```
+
+### Handle All Status Codes
+
+```javascript
+async function handleAPIResponse(response) {
+  const data = await response.json();
+  
+  switch (response.status) {
+    case 200:
+    case 201:
+      return data;
+    
+    case 400:
+      throw new Error(`Invalid request: ${data.error}`);
+    
+    case 401:
+      // Redirect to login
+      window.location.href = '/login';
+      throw new Error('Unauthorized');
+    
+    case 403:
+      throw new Error('You do not have permission to perform this action');
+    
+    case 404:
+      throw new Error(`Not found: ${data.error}`);
+    
+    case 409:
+      // Handle conflicts gracefully (may not be an error)
+      console.warn('Conflict:', data.error);
+      return { conflict: true, ...data };
+    
+    case 429:
+      const retryAfter = response.headers.get('Retry-After');
+      throw new Error(`Rate limited. Retry in ${retryAfter}s`);
+    
+    case 500:
+    default:
+      throw new Error('Server error. Please try again later.');
+  }
+}
+```
+
+## Helper Function: `isAuthError`
+
+The `isAuthError()` helper from `lib/auth.ts` is a type guard for checking if `validateAuthOrReject()` returned an error response:
+
+```typescript
+import { validateAuthOrReject, isAuthError } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  const authResult = await validateAuthOrReject(req);
+  
+  if (isAuthError(authResult)) {
+    // authResult is NextResponse (401 error)
+    return authResult;
+  }
+  
+  // authResult is string (userId)
+  const userId = authResult;
+  // Continue with authenticated logic
+}
+```
+
+**Type signature:**
+
+```typescript
+function isAuthError(result: string | NextResponse): result is NextResponse {
+  return result instanceof NextResponse;
+}
+```
+
+## Common Error Patterns
+
+### Database Errors
+
+```typescript
+const { data, error } = await supabase
+  .from("stories")
+  .insert(storyData);
+
+if (error) {
+  // Log the real error
+  console.error("[API] Database error:", error);
+  
+  // Return sanitized error
+  return NextResponse.json(
+    { error: "Failed to save story" },
+    { status: 500 }
+  );
+}
+```
+
+### AI API Errors
+
+```typescript
+try {
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
+} catch (error) {
+  console.error("[API] Gemini error:", error);
+  
+  // Return sanitized error
+  return NextResponse.json(
+    { error: "Failed to analyze story" },
+    { status: 500 }
+  );
+}
+```
+
+### Validation Errors
+
+```typescript
+if (!storyId || !storyText) {
+  return NextResponse.json(
+    { error: "Missing required fields: storyId and storyText" },
+    { status: 400 }
+  );
+}
+
+if (storyText.length < 50) {
+  return NextResponse.json(
+    { error: "Story text must be at least 50 characters" },
+    { status: 400 }
+  );
+}
+```
+
+## Error Logging
+
+All errors are logged server-side with context:
+
+```typescript
+console.error("[API_ROUTE_NAME] Error:", error, {
+  userId,
+  storyId,
+  timestamp: new Date().toISOString(),
+});
+```
+
+**Log format:**
+
+```
+[API_ROUTE_NAME] Error: <error message> { context }
+```
+
+**Examples:**
+
+```
+[API /stories POST] insert error: { code: '23505', detail: 'duplicate key...' }
+[CRE/TRIGGER] Workflow trigger failed: Connection timeout
+[API /ai/analyze] Gemini API failed after all retries
+```
+
+<Note>
+  Logs are available in your hosting platform's dashboard (Vercel, etc.). Never log sensitive data like tokens, passwords, or user PII.
+</Note>
+
+## Production Best Practices
+
+<Warning>
+  **Security Rules:**
+  - Never return `error.message` from caught exceptions
+  - Never expose database error codes/details
+  - Never leak environment variable names or values
+  - Never include stack traces in responses
+  - Always log detailed errors server-side
+</Warning>
+
+### Error Monitoring
+
+For production, integrate error monitoring:
+
+- **Sentry** — Automatic error tracking + stack traces
+- **LogRocket** — Session replay + error context
+- **Datadog** — APM + log aggregation
+- **Vercel Analytics** — Built-in error tracking
+
+### User-Friendly Messages
+
+Provide actionable error messages:
+
+**Bad:**
+```json
+{ "error": "Error" }
+```
+
+**Good:**
+```json
+{ "error": "Story text must be at least 50 characters" }
+```
+
+**Great:**
+```json
+{
+  "error": "Story text must be at least 50 characters",
+  "code": "CONTENT_TOO_SHORT",
+  "minLength": 50,
+  "providedLength": 23
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/api/authentication">
+    Handle authentication errors
+  </Card>
+  <Card title="Rate Limits" icon="gauge" href="/api/rate-limits">
+    Handle rate limit errors
+  </Card>
+</CardGroup>

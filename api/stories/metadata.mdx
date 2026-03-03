@@ -1,0 +1,161 @@
+---
+title: "Get Story Metadata"
+api: "GET /api/stories/[storyId]/metadata"
+description: "Retrieve AI-generated metadata for a specific story"
+authMethod: "none"
+---
+
+Fetches AI-extracted metadata for a story, including themes, entities, emotional analysis, and significance scores. This endpoint also supports updating the `is_canonical` flag (important story marker).
+
+## Path Parameters
+
+<ParamField path="storyId" type="string" required>
+  Story UUID
+</ParamField>
+
+## GET Response
+
+<ResponseField name="metadata" type="object" optional>
+  Story metadata object (null if not yet analyzed)
+  <Expandable title="properties">
+    <ResponseField name="id" type="string">
+      Metadata UUID
+    </ResponseField>
+    <ResponseField name="story_id" type="string">
+      Associated story UUID
+    </ResponseField>
+    <ResponseField name="themes" type="array">
+      Array of extracted themes
+    </ResponseField>
+    <ResponseField name="emotional_tone" type="string">
+      Primary emotion (e.g., "joy", "neutral", "melancholy")
+    </ResponseField>
+    <ResponseField name="life_domain" type="string">
+      Life category (e.g., "work", "relationships", "health")
+    </ResponseField>
+    <ResponseField name="intensity_score" type="number">
+      Emotional intensity (0-10)
+    </ResponseField>
+    <ResponseField name="significance_score" type="number">
+      Story importance (0-10)
+    </ResponseField>
+    <ResponseField name="is_canonical" type="boolean">
+      Whether marked as an important story by the author
+    </ResponseField>
+    <ResponseField name="ai_readable" type="boolean">
+      Whether AI can read this story
+    </ResponseField>
+    <ResponseField name="people_mentioned" type="array">
+      Array of people/entity names
+    </ResponseField>
+    <ResponseField name="places_mentioned" type="array">
+      Array of locations
+    </ResponseField>
+    <ResponseField name="time_references" type="array">
+      Array of temporal references
+    </ResponseField>
+    <ResponseField name="analysis_status" type="string">
+      Status: `"pending"`, `"complete"`, or `"failed"`
+    </ResponseField>
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp
+    </ResponseField>
+    <ResponseField name="updated_at" type="string">
+      ISO 8601 timestamp
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="warning" type="string" optional>
+  Warning message if `story_metadata` table doesn't exist yet
+</ResponseField>
+
+## PATCH Request (Update is_canonical)
+
+<ParamField body="is_canonical" type="boolean" required>
+  Mark story as important/canonical
+</ParamField>
+
+<Note>
+PATCH requests require authentication and ownership of the story.
+</Note>
+
+## Example GET Request
+
+```bash cURL
+curl -X GET "https://estory.app/api/stories/7c8d9e0f-1234-5678-9abc-def012345678/metadata"
+```
+
+## Example GET Response
+
+```json
+{
+  "metadata": {
+    "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+    "story_id": "7c8d9e0f-1234-5678-9abc-def012345678",
+    "themes": ["achievement", "nature", "personal_growth"],
+    "emotional_tone": "proud",
+    "life_domain": "recreation",
+    "intensity_score": 7.5,
+    "significance_score": 8.0,
+    "is_canonical": false,
+    "ai_readable": true,
+    "people_mentioned": [],
+    "places_mentioned": ["Mount Rainier"],
+    "time_references": ["today"],
+    "analysis_status": "complete",
+    "created_at": "2026-03-03T10:30:15.000Z",
+    "updated_at": "2026-03-03T10:30:15.000Z"
+  }
+}
+```
+
+## Example PATCH Request
+
+```bash cURL
+curl -X PATCH "https://estory.app/api/stories/7c8d9e0f-1234-5678-9abc-def012345678/metadata" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "is_canonical": true
+  }'
+```
+
+## Example PATCH Response
+
+```json
+{
+  "success": true,
+  "metadata": {
+    "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+    "story_id": "7c8d9e0f-1234-5678-9abc-def012345678",
+    "is_canonical": true,
+    "updated_at": "2026-03-03T10:35:00.000Z"
+  }
+}
+```
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message
+</ResponseField>
+
+### GET Errors
+
+| Status Code | Description |
+|-------------|-------------|
+| 400 | Story ID is required |
+| 500 | Failed to fetch metadata |
+
+### PATCH Errors
+
+| Status Code | Description |
+|-------------|-------------|
+| 400 | Story ID is required |
+| 400 | is_canonical must be a boolean |
+| 401 | Unauthorized (missing or invalid token) |
+| 403 | Forbidden (you can only modify your own stories) |
+| 404 | User not found |
+| 404 | Story not found |
+| 500 | Failed to check/update metadata |

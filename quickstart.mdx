@@ -1,80 +1,287 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart Guide
+description: Get from zero to your first recorded story in 5 minutes
 ---
 
-## Get started in three steps
+# Get Started with eStory
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide will take you from zero to your first recorded story on the blockchain. You'll connect your wallet (or sign in with Google), set up your profile, record a story with AI transcription, and save it permanently.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  **Prerequisites**: Chrome/Firefox browser with microphone access. For Web3 features, you'll need a MetaMask wallet with Base Sepolia testnet configured.
+</Note>
+
+## Steps to Your First Story
+
+<Steps>
+  <Step title="Connect Wallet or Sign In with Google">
+    eStory supports **dual authentication**: Web3 wallet or Google OAuth.
+
+    ### Web3 Wallet (MetaMask)
+
+    1. Visit the eStory homepage at `https://yourdomain.com`
+    2. Click **"Connect Wallet"** in the top navigation
+    3. Select your wallet provider (MetaMask, Rainbow, Coinbase Wallet, etc.)
+    4. Approve the connection request
+    5. Switch to **Base Sepolia** testnet (Chain ID: 84532)
+
+    **Behind the scenes**: eStory uses Wagmi 2.17 + RainbowKit 2.2 for wallet integration. The auth flow:
+
+    ```typescript
+    // 1. Client fetches nonce from server
+    const nonceRes = await fetch(`/api/auth/nonce?address=${address}`);
+    const { nonce, timestamp } = await nonceRes.json();
+
+    // 2. User signs message with nonce (5-min expiry)
+    const message = `Sign this message to authenticate with eStory.\n\nNonce: ${nonce}\nTimestamp: ${timestamp}`;
+    const signature = await signMessage({ message });
+
+    // 3. Server verifies signature and nonce (one-time use)
+    const loginRes = await fetch('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ address, signature, nonce, timestamp })
+    });
+    ```
+
+    The server-side verification uses `viem` to recover the address and validate the nonce (from `app/api/auth/login/route.ts:45`).
+
+    ### Google OAuth
+
+    1. Click **"Sign in with Google"**
+    2. Select your Google account
+    3. Grant permissions
+    4. Redirected to eStory with authenticated session
+
+    New Google users go through an onboarding flow automatically.
+
+    <Tip>
+      You can **link both accounts** later in Profile > Settings to unify wallet and Google auth.
+    </Tip>
+  </Step>
+
+  <Step title="Set Up Your Profile">
+    After authentication, you'll see an onboarding modal (or navigate to `/profile`).
+
+    1. **Choose a display name** (3-50 characters)
+    2. **Write a bio** (optional, up to 500 characters)
+    3. **Upload an avatar** (optional, max 5MB, JPEG/PNG/GIF)
+    4. **Set location and website** (optional)
+    5. Click **"Save Profile"**
+
+    Your profile is stored in Supabase (`users` table) with Row Level Security (RLS) policies ensuring only you can modify it.
+
+    ```typescript
+    // Profile update (from app/api/user/profile/route.ts:58)
+    const { error } = await supabase
+      .from('users')
+      .update({
+        name: validatedData.name,
+        bio: validatedData.bio,
+        avatar_url: validatedData.avatar_url,
+        location: validatedData.location,
+        website: validatedData.website
+      })
+      .eq('id', authenticatedUserId);
+    ```
+  </Step>
+
+  <Step title="Record Your First Story with Voice-to-Text">
+    Navigate to `/record` to access the recording interface.
+
+    ### Recording Flow
+
+    1. **Click the microphone button** to start recording
+    2. **Speak naturally**—the duration counter tracks your time
+    3. **Click the square button** to stop recording
+    4. **Audio is automatically transcribed** using ElevenLabs Scribe API
+
+    **Code Reference** (from `app/record/RecordPageClient.tsx:180`):
+
+    ```typescript
+    const startRecording = async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      const audioChunks: Blob[] = [];
+
+      mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        setAudioBlob(audioBlob);
+        await transcribeAudio(audioBlob); // ElevenLabs API
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    };
+    ```
+
+    ### Transcription
+
+    The audio is sent to `/api/ai/transcribe` which uses **ElevenLabs Scribe**:
+
+    ```typescript
+    // API route: app/api/ai/transcribe/route.ts:35
+    const transcription = await client.speechToText.convert({
+      audio: fileBuffer,
+      model: "scribe-v1",
+      language: "en"
+    });
+    ```
+
+    <Warning>
+      **Rate Limit**: AI endpoints are limited to 10 requests/minute. Max audio file size: 25MB.
+    </Warning>
+  </Step>
+
+  <Step title="Enhance with AI (Optional)">
+    After transcription, you can **polish your text** with AI enhancement:
+
+    1. Click **"Enhance with AI"** button (wand icon)
+    2. Google Gemini 2.5 Flash improves grammar, flow, and clarity
+    3. Review the enhanced text
+    4. Click **"Undo"** (undo icon) to revert if needed
+
+    **Behind the scenes** (from `app/api/ai/enhance/route.ts:42`):
+
+    ```typescript
+    const prompt = `Enhance this personal story. Improve grammar, clarity, and flow while preserving the author's voice:\n\n${text}`;
+
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const result = await model.generateContent(prompt);
+    const enhancedText = result.response.text();
+    ```
+
+    The original text is saved in `preEnhanceText` state so you can undo.
+  </Step>
+
+  <Step title="Save to Blockchain">
+    Once you're happy with your story:
+
+    1. **Add a title** (required, 3-200 characters)
+    2. **Set visibility**: Public or Private (private stories use local vault encryption)
+    3. **Choose a date** (defaults to today, supports backdating)
+    4. Click **"Save Story"**
+
+    ### Save Process (Dual-Write)
+
+    Stories are saved to **two locations**:
+
+    **1. Supabase (Cloud)**
+
+    ```typescript
+    // From app/record/RecordPageClient.tsx:380
+    const saveRes = await fetch('/api/journal/save', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: JSON.stringify({
+        title: entryTitle,
+        content: transcribedText,
+        audio_url: uploadedAudioUrl,
+        is_public: isPublic,
+        date: storyDate
+      })
+    });
+    ```
+
+    The server saves to the `stories` table and triggers **AI analysis** to extract themes, emotions, and cognitive metadata (from `app/api/journal/save/route.ts:125`).
+
+    **2. Local Vault (Optional, Encrypted)**
+
+    If you've set up the local vault with a PIN:
+
+    ```typescript
+    // From app/record/RecordPageClient.tsx:420
+    const vaultDb = getVaultDb();
+    const dek = getDEK();
+    const encryptedContent = await encryptString(transcribedText, dek);
+
+    await vaultDb.stories.add({
+      id: crypto.randomUUID(),
+      title: entryTitle,
+      content: encryptedContent, // AES-256-GCM encrypted
+      is_public: isPublic,
+      created_at: Date.now(),
+      synced: true
+    });
+    ```
+
+    The vault uses **PBKDF2** (100K iterations) to derive a Key Encryption Key (KEK) from your PIN, which wraps a Data Encryption Key (DEK). Your PIN never leaves the device.
+
+    <Tip>
+      **Vault Security**: Stories are encrypted in IndexedDB with AES-256-GCM. The DEK is held in-memory only while unlocked. `clearAllKeys()` is called on sign-out.
+    </Tip>
+  </Step>
+</Steps>
+
+## What Happens After Saving?
+
+### 1. AI Analysis (Automatic)
+
+The server triggers cognitive metadata extraction using Gemini 2.5 Flash:
+
+```typescript
+// From app/api/ai/analyze/route.ts:85
+const analysisPrompt = `Analyze this story and extract:\n- Themes (3-5 keywords)\n- Emotional tone\n- Life domains (health, relationships, work, etc.)\n- Significance score (0-100)\n\nStory: ${content}`;
+
+const result = await model.generateContent(analysisPrompt);
+const metadata = JSON.parse(result.response.text());
+
+// Saved to story_metadata table
+await supabase.from('story_metadata').insert({
+  story_id: storyId,
+  themes: metadata.themes,
+  emotional_tone: metadata.emotional_tone,
+  significance_score: metadata.significance_score
+});
+```
+
+### 2. Chainlink CRE Verification (Optional)
+
+For privacy-preserving verification, trigger CRE:
+
+```bash
+curl -X POST /api/cre/trigger \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{"storyId": "uuid-here"}'
+```
+
+This sends your story to Chainlink's Decentralized Oracle Network (DON) for verifiable AI analysis. The DON returns:
+- **On-chain proof** (quality tier, threshold boolean, hashes) → `PrivateVerifiedMetrics.sol`
+- **Full metrics** (scores, themes, word count) → Supabase (author-only access)
+
+The `useVerifiedMetrics` hook polls every 10 seconds until verification completes.
+
+### 3. View Your Story
+
+- **Library**: Visit `/library` to see all your stories with filtering and search
+- **Story Detail**: Click any story to view full content at `/story/[storyId]`
+- **Social Feed**: Public stories appear in `/social` for community engagement
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Explore the Library" icon="book-open" href="/library">
+    View all your stories, compile books, and manage your collection
+  </Card>
+  
+  <Card title="Join the Social Feed" icon="users" href="/social">
+    Discover other stories, earn $STORY tokens from likes and tips
+  </Card>
+  
+  <Card title="Developer Setup" icon="code" href="/installation">
+    Clone the repo and run eStory locally with smart contract deployment
+  </Card>
+  
+  <Card title="API Reference" icon="brackets" href="/api-reference">
+    Explore all API endpoints for building on top of eStory
+  </Card>
+</CardGroup>
+
+---
+
+<Note>
+  **Need Help?** Join our Discord community or email support@estory.app
 </Note>

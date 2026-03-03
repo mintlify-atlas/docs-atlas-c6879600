@@ -1,0 +1,730 @@
+---
+title: Database Schema
+description: Complete database schema for Supabase tables, RLS policies, indexes, and type definitions
+---
+
+# Database Schema
+
+eStory uses Supabase (PostgreSQL) for cloud storage and Dexie.js (IndexedDB) for client-side encrypted local storage.
+
+## Cloud Database (Supabase)
+
+### Tables Overview
+
+<CardGroup cols={2}>
+  <Card title="Core Tables" icon="database">
+    - `users` — User profiles and auth data
+    - `stories` — Journal entries with metadata
+    - `story_metadata` — AI-extracted insights
+    - `books` — Compiled story collections
+  </Card>
+  <Card title="Social Tables" icon="users">
+    - `likes` — Story like records
+    - `follows` — User follow relationships
+    - `comments` — Story comments
+    - `saved_stories` — Bookmarked stories
+  </Card>
+  <Card title="System Tables" icon="cog">
+    - `notifications` — In-app notifications
+    - `habits` — Habit tracking records
+    - `weekly_reflections` — AI weekly summaries
+    - `nonces` — Wallet auth nonces
+  </Card>
+  <Card title="Verification Tables" icon="shield-check">
+    - `verified_metrics` — CRE-verified story metrics
+    - `verification_logs` — CRE request audit log
+    - `waitlist` — Pre-launch email capture
+  </Card>
+</CardGroup>
+
+## Core Tables
+
+### users
+
+<Accordion title="Schema" icon="user">
+  ```sql
+  CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wallet_address TEXT UNIQUE,
+    google_id TEXT UNIQUE,
+    google_email TEXT,
+    google_avatar TEXT,
+    auth_provider TEXT DEFAULT 'wallet', -- 'wallet' | 'google' | 'both'
+    name TEXT,
+    username TEXT UNIQUE,
+    bio TEXT,
+    avatar TEXT,
+    location TEXT,
+    website TEXT,
+    badges TEXT[] DEFAULT '{}',
+    streak_count INTEGER DEFAULT 0,
+    total_stories INTEGER DEFAULT 0,
+    total_likes INTEGER DEFAULT 0,
+    followers_count INTEGER DEFAULT 0,
+    following_count INTEGER DEFAULT 0,
+    monthly_goal INTEGER DEFAULT 10,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_users_wallet ON users(wallet_address);
+  CREATE INDEX idx_users_google ON users(google_id);
+  CREATE INDEX idx_users_username ON users(username);
+  ```
+  
+  **Unique Constraints:**
+  - `wallet_address` — Blockchain identity
+  - `google_id` — Google OAuth ID
+  - `username` — Display username
+</Accordion>
+
+<Accordion title="RLS Policies" icon="shield">
+  ```sql
+  -- Anyone can view public user profiles
+  CREATE POLICY "Public profiles are viewable by everyone"
+  ON users FOR SELECT
+  USING (true);
+  
+  -- Users can update their own profile
+  CREATE POLICY "Users can update own profile"
+  ON users FOR UPDATE
+  USING (auth.uid() = id);
+  
+  -- Only authenticated users can insert (via onboarding)
+  CREATE POLICY "Authenticated users can create profile"
+  ON users FOR INSERT
+  WITH CHECK (auth.role() = 'authenticated');
+  ```
+</Accordion>
+
+### stories
+
+<Accordion title="Schema" icon="book">
+  ```sql
+  CREATE TABLE stories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    author_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    mood TEXT,
+    tags TEXT[] DEFAULT '{}',
+    audio_url TEXT,
+    is_public BOOLEAN DEFAULT true,
+    is_canonical BOOLEAN DEFAULT false,
+    view_count INTEGER DEFAULT 0,
+    like_count INTEGER DEFAULT 0,
+    comment_count INTEGER DEFAULT 0,
+    paywall_price DECIMAL(18, 2) DEFAULT 0,
+    ipfs_hash TEXT,
+    story_date DATE DEFAULT CURRENT_DATE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_stories_author ON stories(author_wallet);
+  CREATE INDEX idx_stories_public ON stories(is_public);
+  CREATE INDEX idx_stories_date ON stories(story_date DESC);
+  CREATE INDEX idx_stories_tags ON stories USING GIN(tags);
+  CREATE INDEX idx_stories_created ON stories(created_at DESC);
+  ```
+  
+  **Key Fields:**
+  - `is_canonical` — User-marked as important ("Key Moment")
+  - `paywall_price` — Price to unlock (0 = free)
+  - `ipfs_hash` — IPFS CID if uploaded
+</Accordion>
+
+<Accordion title="RLS Policies" icon="shield">
+  ```sql
+  -- Public stories are viewable by everyone
+  CREATE POLICY "Public stories are viewable"
+  ON stories FOR SELECT
+  USING (is_public = true OR auth.uid() = author_wallet);
+  
+  -- Only author can update/delete
+  CREATE POLICY "Authors can modify own stories"
+  ON stories FOR ALL
+  USING (auth.uid() = author_wallet);
+  
+  -- Authenticated users can create stories
+  CREATE POLICY "Authenticated users can create stories"
+  ON stories FOR INSERT
+  WITH CHECK (auth.role() = 'authenticated' AND auth.uid() = author_wallet);
+  ```
+</Accordion>
+
+### story_metadata
+
+<Accordion title="Schema" icon="sparkles">
+  ```sql
+  CREATE TABLE story_metadata (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    story_id UUID UNIQUE NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    
+    -- AI-extracted fields
+    themes TEXT[] DEFAULT '{}',
+    emotional_tone TEXT, -- 'reflective', 'joyful', 'anxious', 'hopeful', etc.
+    life_domain TEXT,    -- 'work', 'relationships', 'health', 'identity', 'growth'
+    
+    -- Scoring (Self-Defining Memory detection)
+    intensity_score FLOAT DEFAULT 0,     -- 0-1, emotional charge
+    significance_score FLOAT DEFAULT 0,  -- 0-1, life event importance
+    
+    -- User controls
+    is_canonical BOOLEAN DEFAULT false,  -- User-marked as important
+    ai_readable BOOLEAN DEFAULT true,    -- Consent for AI analysis
+    
+    -- Extracted entities
+    people_mentioned TEXT[] DEFAULT '{}',
+    places_mentioned TEXT[] DEFAULT '{}',
+    time_references TEXT[] DEFAULT '{}',
+    
+    -- Brief insight from analysis
+    brief_insight TEXT,
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_story_metadata_story ON story_metadata(story_id);
+  CREATE INDEX idx_story_metadata_themes ON story_metadata USING GIN(themes);
+  CREATE INDEX idx_story_metadata_domain ON story_metadata(life_domain);
+  CREATE INDEX idx_story_metadata_canonical ON story_metadata(is_canonical);
+  ```
+  
+  **AI Analysis Fields:**
+  - Generated by `POST /api/ai/analyze`
+  - Powered by Google Gemini 2.5 Flash
+  - Automatically created on story save
+</Accordion>
+
+<Accordion title="RLS Policies" icon="shield">
+  ```sql
+  -- Metadata inherits story visibility
+  CREATE POLICY "Metadata visible if story is visible"
+  ON story_metadata FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM stories
+      WHERE stories.id = story_metadata.story_id
+      AND (stories.is_public = true OR auth.uid() = stories.author_wallet)
+    )
+  );
+  
+  -- Only story author or system can write metadata
+  CREATE POLICY "Story author can manage metadata"
+  ON story_metadata FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM stories
+      WHERE stories.id = story_metadata.story_id
+      AND auth.uid() = stories.author_wallet
+    )
+  );
+  ```
+</Accordion>
+
+### books
+
+<Accordion title="Schema" icon="book-open">
+  ```sql
+  CREATE TABLE books (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    author_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    title TEXT NOT NULL,
+    description TEXT,
+    cover_image TEXT,
+    story_ids UUID[] DEFAULT '{}',
+    is_public BOOLEAN DEFAULT true,
+    nft_token_id INTEGER,
+    nft_contract_address TEXT,
+    ipfs_hash TEXT,
+    mint_price DECIMAL(18, 2) DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_books_author ON books(author_wallet);
+  CREATE INDEX idx_books_public ON books(is_public);
+  CREATE INDEX idx_books_nft ON books(nft_token_id);
+  ```
+  
+  **NFT Integration:**
+  - `nft_token_id` — StoryNFT ERC721 token ID
+  - `nft_contract_address` — StoryNFT contract address
+  - Minted via `POST /api/book/compile`
+</Accordion>
+
+## Social Tables
+
+### likes
+
+<Accordion title="Schema" icon="heart">
+  ```sql
+  CREATE TABLE likes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    user_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(story_id, user_wallet)
+  );
+  
+  CREATE INDEX idx_likes_story ON likes(story_id);
+  CREATE INDEX idx_likes_user ON likes(user_wallet);
+  ```
+  
+  **Unique Constraint:**
+  - One like per user per story
+  - Prevents double-liking
+  
+  **API Endpoint:** `POST /api/social/like` (atomic toggle)
+</Accordion>
+
+### follows
+
+<Accordion title="Schema" icon="user-plus">
+  ```sql
+  CREATE TABLE follows (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    follower_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    following_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(follower_wallet, following_wallet),
+    CHECK (follower_wallet != following_wallet)
+  );
+  
+  CREATE INDEX idx_follows_follower ON follows(follower_wallet);
+  CREATE INDEX idx_follows_following ON follows(following_wallet);
+  ```
+  
+  **Constraints:**
+  - Unique follow relationship
+  - Cannot follow yourself
+  
+  **API Endpoint:** `POST /api/social/follow`
+</Accordion>
+
+### comments
+
+<Accordion title="Schema" icon="message-square">
+  ```sql
+  CREATE TABLE comments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    author_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    content TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_comments_story ON comments(story_id);
+  CREATE INDEX idx_comments_author ON comments(author_wallet);
+  CREATE INDEX idx_comments_created ON comments(created_at DESC);
+  ```
+</Accordion>
+
+### saved_stories
+
+<Accordion title="Schema" icon="bookmark">
+  ```sql
+  CREATE TABLE saved_stories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    user_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(story_id, user_wallet)
+  );
+  
+  CREATE INDEX idx_saved_stories_user ON saved_stories(user_wallet);
+  CREATE INDEX idx_saved_stories_story ON saved_stories(story_id);
+  ```
+</Accordion>
+
+## System Tables
+
+### notifications
+
+<Accordion title="Schema" icon="bell">
+  ```sql
+  CREATE TABLE notifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    type TEXT NOT NULL, -- 'like', 'comment', 'follow', 'tip', 'paywall_purchase'
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    link TEXT,
+    read BOOLEAN DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_notifications_user ON notifications(user_wallet);
+  CREATE INDEX idx_notifications_read ON notifications(read);
+  CREATE INDEX idx_notifications_created ON notifications(created_at DESC);
+  ```
+  
+  **API Endpoints:**
+  - `GET /api/notifications` — Fetch with pagination
+  - `PUT /api/notifications` — Mark as read
+  - `DELETE /api/notifications` — Delete notification
+</Accordion>
+
+### habits
+
+<Accordion title="Schema" icon="check-circle">
+  ```sql
+  CREATE TABLE habits (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    habit_name TEXT NOT NULL,
+    habit_type TEXT DEFAULT 'daily', -- 'daily', 'weekly', 'custom'
+    target_frequency INTEGER DEFAULT 1,
+    completed_dates DATE[] DEFAULT '{}',
+    current_streak INTEGER DEFAULT 0,
+    longest_streak INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_habits_user ON habits(user_wallet);
+  CREATE INDEX idx_habits_streak ON habits(current_streak DESC);
+  ```
+  
+  **API Endpoint:** `GET/POST/PUT/DELETE /api/habits`
+</Accordion>
+
+### weekly_reflections
+
+<Accordion title="Schema" icon="calendar">
+  ```sql
+  CREATE TABLE weekly_reflections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_wallet TEXT NOT NULL REFERENCES users(wallet_address),
+    reflection_text TEXT NOT NULL,
+    stories_analyzed UUID[] DEFAULT '{}',
+    themes_identified TEXT[] DEFAULT '{}',
+    week_start TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_reflections_wallet ON weekly_reflections(user_wallet);
+  CREATE INDEX idx_reflections_created ON weekly_reflections(created_at DESC);
+  ```
+  
+  **Generated by:** `POST /api/ai/reflection` (once per week limit)
+</Accordion>
+
+### nonces
+
+<Accordion title="Schema" icon="key">
+  ```sql
+  CREATE TABLE nonces (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wallet_address TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    used BOOLEAN DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_nonces_wallet ON nonces(wallet_address);
+  CREATE INDEX idx_nonces_nonce ON nonces(nonce);
+  CREATE INDEX idx_nonces_expires ON nonces(expires_at);
+  ```
+  
+  **Purpose:** Prevents signature replay attacks in wallet authentication
+  
+  **Lifecycle:**
+  1. Generated by `GET /api/auth/nonce?address=0x...`
+  2. Single-use (marked `used: true` after verification)
+  3. Expires after 5 minutes
+</Accordion>
+
+## Verification Tables (CRE)
+
+### verified_metrics
+
+<Accordion title="Schema" icon="shield-check">
+  ```sql
+  CREATE TABLE verified_metrics (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    significance_score INTEGER DEFAULT 0,      -- 0-100
+    emotional_depth INTEGER DEFAULT 1,          -- 1-5
+    quality_score INTEGER DEFAULT 0,            -- 0-100
+    word_count INTEGER DEFAULT 0,
+    verified_themes TEXT[] DEFAULT '{}',
+    metrics_hash TEXT,                          -- keccak256 of all metrics + salt
+    quality_tier INTEGER DEFAULT 1,             -- 1-5 derived from quality_score
+    meets_quality_threshold BOOLEAN DEFAULT FALSE,
+    cre_attestation_id TEXT,
+    on_chain_tx_hash TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(story_id)
+  );
+  
+  CREATE INDEX idx_verified_metrics_story ON verified_metrics(story_id);
+  CREATE INDEX idx_verified_metrics_tier ON verified_metrics(quality_tier DESC);
+  ```
+  
+  **Privacy Model:**
+  - Full metrics stored off-chain (Supabase)
+  - Only tier, threshold, and hashes on-chain (PrivateVerifiedMetrics.sol)
+  - Author-only access via `POST /api/cre/check`
+  
+  **Integration:**
+  - Triggered by `POST /api/cre/trigger`
+  - Callback from DON to `POST /api/cre/callback`
+  - Read via `useVerifiedMetrics` hook
+</Accordion>
+
+### verification_logs
+
+<Accordion title="Schema" icon="file-text">
+  ```sql
+  CREATE TABLE verification_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending',  -- 'pending', 'completed', 'failed'
+    triggered_by UUID,                       -- user who triggered verification
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+  
+  CREATE INDEX idx_verification_logs_story ON verification_logs(story_id);
+  CREATE INDEX idx_verification_logs_status ON verification_logs(status);
+  ```
+</Accordion>
+
+## Local Vault (IndexedDB)
+
+### Database: estory-vault
+
+Client-side encrypted storage using Dexie.js. All text fields are AES-256-GCM encrypted.
+
+<Warning>
+  This is NOT a Supabase table. It lives entirely in the browser via IndexedDB.
+</Warning>
+
+### stories (Vault)
+
+<Accordion title="Schema" icon="lock">
+  ```typescript
+  interface LocalStoryRecord {
+    localId: string;              // UUID, primary key
+    userId: string;               // Owner's user ID (indexed)
+    encrypted_title: string;      // Base64 AES-GCM ciphertext
+    title_iv: string;             // Base64 IV for title
+    encrypted_content: string;    // Base64 AES-GCM ciphertext
+    content_iv: string;           // Base64 IV for content
+    encrypted_audio?: string;     // Base64 encrypted audio blob
+    audio_iv?: string;            // Base64 IV for audio
+    encrypted_metadata?: string;  // Base64 encrypted JSON (mood, tags)
+    metadata_iv?: string;         // Base64 IV for metadata
+    checksum: string;             // SHA-256 hash of plaintext for integrity
+    cloud_id?: string;            // Cloud story ID after sync (indexed)
+    sync_status: SyncStatus;      // 'local' | 'pending' | 'synced' | 'error' (indexed)
+    is_public: boolean;           // Whether story is public
+    story_date: string;           // User-selected story date
+    created_at: string;           // ISO timestamp
+    updated_at: string;           // ISO timestamp (indexed)
+  }
+  
+  type SyncStatus = "local" | "pending" | "synced" | "error";
+  ```
+  
+  **Implementation:** `lib/vault/db.ts`
+</Accordion>
+
+### vaultKeys
+
+<Accordion title="Schema" icon="key">
+  ```typescript
+  interface VaultKeyRecord {
+    userId: string;        // Owner's user ID (primary key)
+    salt: string;          // Base64 PBKDF2 salt (16 bytes)
+    wrapped_dek: string;   // Base64 AES-KW wrapped DEK
+    pin_hash: string;      // SHA-256 hash of PIN+salt for quick verification
+    created_at: string;    // ISO timestamp
+  }
+  ```
+  
+  **Encryption Flow:**
+  1. User enters 6-digit PIN
+  2. PIN → PBKDF2 (100K iterations) → KEK
+  3. KEK unwraps DEK via AES-KW
+  4. DEK decrypts story fields via AES-256-GCM
+</Accordion>
+
+### syncQueue
+
+<Accordion title="Schema" icon="cloud-upload">
+  ```typescript
+  interface SyncQueueRecord {
+    id?: number;                  // Auto-incremented primary key
+    storyLocalId: string;         // References stories.localId (indexed)
+    userId: string;               // Owner's user ID (indexed)
+    action: "upload" | "update" | "delete";
+    status: "pending" | "processing" | "failed" (indexed);
+    retryCount: number;
+    lastAttempt?: string;         // ISO timestamp of last attempt
+    error?: string;               // Last error message
+    created_at: string;           // ISO timestamp
+  }
+  ```
+  
+  **Purpose:** Queue for syncing local vault stories to Supabase cloud
+</Accordion>
+
+## Type Definitions
+
+### Core Types (app/types/index.ts)
+
+```typescript
+export interface AuthorProfile {
+  wallet_address: string;
+  name: string;
+  username?: string;
+  avatar?: string;
+  bio?: string;
+  badges?: string[];
+  streak_count?: number;
+  followers_count?: number;
+}
+
+export interface StoryDataType {
+  id: string;
+  author_wallet: string;
+  title: string;
+  content: string;
+  mood?: string;
+  tags?: string[];
+  audio_url?: string;
+  is_public: boolean;
+  is_canonical: boolean;
+  view_count: number;
+  like_count: number;
+  comment_count: number;
+  paywall_price: number;
+  ipfs_hash?: string;
+  story_date: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoryMetadata {
+  id: string;
+  story_id: string;
+  themes: string[];
+  emotional_tone: EmotionalTone;
+  life_domain: LifeDomain;
+  intensity_score: number;
+  significance_score: number;
+  is_canonical: boolean;
+  ai_readable: boolean;
+  people_mentioned: string[];
+  places_mentioned: string[];
+  time_references: string[];
+  brief_insight: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EmotionalTone =
+  | 'reflective' | 'joyful' | 'anxious' | 'hopeful' | 'melancholic'
+  | 'grateful' | 'frustrated' | 'peaceful' | 'excited' | 'uncertain';
+
+export type LifeDomain =
+  | 'work' | 'relationships' | 'health' | 'identity' | 'growth'
+  | 'creativity' | 'spirituality' | 'family' | 'adventure' | 'learning';
+
+export interface NarrativeObject extends StoryDataType {
+  metadata?: StoryMetadata;
+}
+
+export interface Notification {
+  id: string;
+  user_wallet: string;
+  type: 'like' | 'comment' | 'follow' | 'tip' | 'paywall_purchase';
+  title: string;
+  message: string;
+  link?: string;
+  read: boolean;
+  created_at: string;
+}
+```
+
+## Storage Bucket
+
+### story-audio
+
+<Accordion title="Configuration" icon="folder">
+  **Purpose:** Store audio recordings from voice journaling
+  
+  **Settings:**
+  - Max file size: 25 MB
+  - Allowed MIME types: `audio/*`
+  - Public access: Enabled (stories are public by default)
+  - RLS: Enabled (only author can delete)
+  
+  **API Endpoint:** `POST /api/audio/upload`
+  
+  **File Naming:**
+  ```typescript
+  const fileName = `${userId}/${Date.now()}-${crypto.randomUUID()}.webm`;
+  ```
+</Accordion>
+
+## Database Constraints
+
+### Foreign Key Cascades
+
+<Note>
+  All foreign keys use `ON DELETE CASCADE` to maintain referential integrity.
+</Note>
+
+| Table | Foreign Key | On Delete |
+|-------|-------------|----------|
+| `stories` | `author_wallet` → `users.wallet_address` | CASCADE |
+| `story_metadata` | `story_id` → `stories.id` | CASCADE |
+| `likes` | `story_id` → `stories.id` | CASCADE |
+| `comments` | `story_id` → `stories.id` | CASCADE |
+| `saved_stories` | `story_id` → `stories.id` | CASCADE |
+| `books` | `author_wallet` → `users.wallet_address` | CASCADE |
+| `notifications` | `user_wallet` → `users.wallet_address` | CASCADE |
+| `habits` | `user_wallet` → `users.wallet_address` | CASCADE |
+| `weekly_reflections` | `user_wallet` → `users.wallet_address` | CASCADE |
+| `verified_metrics` | `story_id` → `stories.id` | CASCADE |
+| `verification_logs` | `story_id` → `stories.id` | CASCADE |
+
+### Unique Constraints
+
+| Table | Constraint | Purpose |
+|-------|-----------|----------|
+| `users` | `(wallet_address)` | One account per wallet |
+| `users` | `(google_id)` | One account per Google ID |
+| `users` | `(username)` | Unique usernames |
+| `story_metadata` | `(story_id)` | One metadata record per story |
+| `likes` | `(story_id, user_wallet)` | One like per user per story |
+| `follows` | `(follower_wallet, following_wallet)` | One follow relationship |
+| `saved_stories` | `(story_id, user_wallet)` | One bookmark per user per story |
+| `verified_metrics` | `(story_id)` | One CRE verification per story |
+
+## Migration Files
+
+Database schema is managed via Supabase migrations in `supabase/migrations/`:
+
+- `001_create_weekly_reflections.sql` — Weekly reflection table
+- `002_enable_rls_policies.sql` — RLS policies for all tables
+- `003_add_oauth_fields.sql` — Google OAuth fields to users table
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="System Architecture" icon="diagram" href="/architecture/overview">
+    Provider stack, data flow, and application structure
+  </Card>
+  <Card title="Security Architecture" icon="shield" href="/architecture/security">
+    RLS policies, encryption, and authentication flows
+  </Card>
+</CardGroup>

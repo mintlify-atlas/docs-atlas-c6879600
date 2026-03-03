@@ -1,0 +1,665 @@
+---
+title: Vault Setup
+description: Set up local encrypted storage for your stories with PIN-protected AES-256-GCM encryption
+---
+
+The eStory Vault provides client-side encrypted storage for your stories using **AES-256-GCM encryption** with **PBKDF2 key derivation**. Your stories are encrypted on-device before storage in IndexedDB, and your PIN never leaves your browser.
+
+## Why Use the Vault?
+
+<CardGroup cols={2}>
+  <Card title="Offline Access" icon="wifi-off">
+    Read your stories without an internet connection. All encrypted data is stored locally in IndexedDB.
+  </Card>
+  <Card title="Zero-Knowledge Security" icon="shield">
+    Your PIN and encryption keys never reach the server. Only you can decrypt your vault.
+  </Card>
+  <Card title="Sync Redundancy" icon="database">
+    Keep a local encrypted backup even if cloud storage fails. Vault saves are non-blocking.
+  </Card>
+  <Card title="Device-Specific" icon="smartphone">
+    Each device has its own vault. PIN is unique per device (not synced across devices).
+  </Card>
+</CardGroup>
+
+<Note>
+  Vault encryption is **optional and additive**. Stories are always saved to the cloud (Supabase + IPFS). Vault provides an additional encrypted local copy.
+</Note>
+
+## Security Architecture
+
+The vault uses a layered encryption model:
+
+```
+User PIN (6 digits) 
+  ↓ PBKDF2 (100K iterations, SHA-256)
+KEK (Key Encryption Key, AES-KW-256)
+  ↓ Wraps (AES-KW)
+DEK (Data Encryption Key, AES-GCM-256)
+  ↓ Encrypts
+Story Title + Content (AES-256-GCM with unique IV per field)
+  ↓ Stored
+IndexedDB (encrypted ciphertext, no plaintext)
+```
+
+### Key Components
+
+1. **PIN:** 6-digit user-chosen PIN (never stored plaintext)
+2. **KEK:** Key Encryption Key derived from PIN via PBKDF2
+3. **DEK:** Data Encryption Key (random AES-256 key, wrapped by KEK)
+4. **Salt:** Random 16-byte value for PBKDF2 (unique per user)
+5. **IV:** Random 12-byte initialization vector (unique per encrypted field)
+
+```tsx
+// lib/vault/crypto.ts:44-71
+export async function derivePinKey(
+  pin: string,
+  salt: Uint8Array
+): Promise<CryptoKey> {
+  const encoder = new TextEncoder();
+  const pinBytes = encoder.encode(pin);
+
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    pinBytes,
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: salt as unknown as BufferSource,
+      iterations: 100_000,
+      hash: "SHA-256",
+    },
+    baseKey,
+    { name: "AES-KW", length: 256 },
+    false,
+    ["wrapKey", "unwrapKey"]
+  );
+}
+```
+
+<Warning>
+  **PBKDF2 iterations:** 100,000 iterations makes brute-force attacks ~10ms per guess. This provides reasonable security for a 6-digit PIN (1 million possible values = ~2.7 hours to brute-force).
+</Warning>
+
+## Setting Up Your Vault
+
+<Steps>
+  <Step title="Navigate to Profile Settings">
+    Go to `/profile` and scroll to the "Local Vault" section. You'll see a "Vault Status: Not set up" card.
+
+    ```tsx
+    // components/vault/VaultSettings.tsx:90-104
+    {!isSetup ? (
+      <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-200 dark:bg-gray-700">
+            <Shield className="w-5 h-5 text-gray-400" />
+          </div>
+          <div>
+            <p className="font-medium text-sm">Vault Status</p>
+            <p className="text-xs text-gray-500">Not set up</p>
+          </div>
+        </div>
+        <Button size="sm" onClick={handleSetup}>
+          Set Up Vault
+        </Button>
+      </div>
+    ) : /* ... */}
+    ```
+  </Step>
+
+  <Step title="Create Your PIN">
+    Click "Set Up Vault". A modal appears prompting you to create a 6-digit PIN.
+
+    <Note>
+      **PIN Requirements:**
+      - Exactly 6 digits
+      - No letters or special characters
+      - Not stored on the server
+      - Must be remembered (no recovery mechanism)
+    </Note>
+
+    ```tsx
+    // components/vault/PinEntryModal.tsx (simplified)
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogHeader>
+        <DialogTitle>{mode === "setup" ? "Create PIN" : "Enter PIN"}</DialogTitle>
+        <DialogDescription>
+          {mode === "setup"
+            ? "Choose a 6-digit PIN to encrypt your stories locally."
+            : "Enter your PIN to unlock the vault."}
+        </DialogDescription>
+      </DialogHeader>
+      <div className="grid grid-cols-6 gap-2">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Input
+            key={i}
+            type="password"
+            maxLength={1}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            ref={(el) => (inputRefs.current[i] = el)}
+          />
+        ))}
+      </div>
+    </Dialog>
+    ```
+  </Step>
+
+  <Step title="Vault Initialization">
+    After entering your PIN, the vault initializes:
+
+    1. **Generate Salt:**
+       ```tsx
+       // lib/vault/keyManager.ts:42
+       const salt = generateSalt();
+       ```
+
+    2. **Generate DEK:**
+       ```tsx
+       // lib/vault/keyManager.ts:43
+       const dek = await generateDEK();
+       ```
+
+    3. **Derive KEK from PIN:**
+       ```tsx
+       // lib/vault/keyManager.ts:46
+       const kek = await derivePinKey(pin, salt);
+       ```
+
+    4. **Wrap DEK with KEK:**
+       ```tsx
+       // lib/vault/keyManager.ts:49
+       const wrappedDek = await wrapDEK(dek, kek);
+       ```
+
+    5. **Hash PIN for verification:**
+       ```tsx
+       // lib/vault/keyManager.ts:52
+       const pinHash = await hashPin(pin, salt);
+       ```
+
+    6. **Store in IndexedDB:**
+       ```tsx
+       // lib/vault/keyManager.ts:55-61
+       const record: VaultKeyRecord = {
+         userId,
+         salt: arrayBufferToBase64(salt.buffer),
+         wrapped_dek: arrayBufferToBase64(wrappedDek),
+         pin_hash: pinHash,
+         created_at: new Date().toISOString(),
+       };
+       await db.vaultKeys.put(record);
+       ```
+
+    7. **Hold DEK in memory:**
+       ```tsx
+       // lib/vault/keyManager.ts:66
+       dekMap.set(userId, dek);
+       ```
+
+    The vault is now unlocked and ready to encrypt stories.
+  </Step>
+
+  <Step title="Confirm Setup">
+    After setup, the vault status changes to "Vault Unlocked" with a green indicator.
+
+    ```tsx
+    // components/vault/VaultSettings.tsx:106-136
+    {isUnlocked && (
+      <div className="flex items-center justify-between p-4 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full flex items-center justify-center bg-green-100 dark:bg-green-900/30">
+            <Unlock className="w-5 h-5 text-green-600" />
+          </div>
+          <div>
+            <p className="font-medium text-sm">Vault Unlocked</p>
+            <p className="text-xs text-green-600 dark:text-green-400">
+              Stories are being saved locally with encryption.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={startChangePin}>
+            <KeyRound className="w-4 h-4" />
+          </Button>
+          <Button size="sm" variant="outline" onClick={lock}>
+            <Lock className="w-4 h-4 mr-1" /> Lock
+          </Button>
+        </div>
+      </div>
+    )}
+    ```
+  </Step>
+</Steps>
+
+## Unlocking the Vault
+
+If you lock the vault or return to the site later, you'll need to unlock it:
+
+<Steps>
+  <Step title="Click 'Unlock Vault'">
+    The vault status shows "Vault Locked" with an amber indicator. Click the "Unlock" button.
+  </Step>
+
+  <Step title="Enter PIN">
+    The PIN entry modal appears. Enter your 6-digit PIN.
+  </Step>
+
+  <Step title="PIN Verification">
+    The vault verifies your PIN:
+
+    1. **Hash check (fast):**
+       ```tsx
+       // lib/vault/keyManager.ts:87-90
+       const enteredHash = await hashPin(pin, salt);
+       if (enteredHash !== record.pin_hash) {
+         return false;
+       }
+       ```
+
+    2. **Unwrap DEK (if hash matches):**
+       ```tsx
+       // lib/vault/keyManager.ts:94-96
+       const kek = await derivePinKey(pin, salt);
+       const wrappedDek = base64ToArrayBuffer(record.wrapped_dek);
+       const dek = await unwrapDEK(wrappedDek, kek);
+       ```
+
+    3. **Store DEK in memory:**
+       ```tsx
+       // lib/vault/keyManager.ts:99
+       dekMap.set(userId, dek);
+       ```
+
+    If the PIN is incorrect, an error message appears and the vault remains locked.
+  </Step>
+
+  <Step title="Access Encrypted Stories">
+    Once unlocked, you can read and write encrypted stories. The DEK is held in memory until you lock the vault or close the browser.
+  </Step>
+</Steps>
+
+## Storing Stories Locally
+
+When the vault is unlocked, stories are automatically saved locally during the cloud save process:
+
+```tsx
+// RecordPageClient.tsx:394-422
+try {
+  if (userId && await checkVaultSetup(userId) && checkVaultUnlocked(userId)) {
+    const dek = getDEK(userId);
+    const encTitle = await encryptString(entryTitle, dek);
+    const encContent = await encryptString(transcribedText, dek);
+
+    const now = new Date().toISOString();
+    const checksumData = new TextEncoder().encode(entryTitle + transcribedText);
+    const hashBuf = await crypto.subtle.digest("SHA-256", checksumData);
+    const { arrayBufferToBase64 } = await import("@/lib/vault/crypto");
+
+    const record: LocalStoryRecord = {
+      localId: crypto.randomUUID(),
+      userId,
+      encrypted_title: encTitle.ciphertext,
+      title_iv: encTitle.iv,
+      encrypted_content: encContent.ciphertext,
+      content_iv: encContent.iv,
+      checksum: arrayBufferToBase64(hashBuf),
+      cloud_id: insertedStory?.id,
+      sync_status: "synced",
+      is_public: isPublic,
+      story_date: backdatedStoryDate,
+      created_at: now,
+      updated_at: now,
+    };
+
+    const db = getVaultDb();
+    await db.stories.put(record);
+    console.log("[VAULT] Story saved locally with encryption");
+  }
+} catch (vaultErr) {
+  // Vault failure never blocks cloud save success
+  console.warn("[VAULT] Local save failed (non-blocking):", vaultErr);
+}
+```
+
+### Encrypted Fields
+
+Each story record stores:
+- `encrypted_title` — Base64-encoded AES-256-GCM ciphertext of title
+- `title_iv` — Base64-encoded 12-byte IV for title encryption
+- `encrypted_content` — Base64-encoded AES-256-GCM ciphertext of content
+- `content_iv` — Base64-encoded 12-byte IV for content encryption
+- `checksum` — SHA-256 hash of plaintext (for integrity verification)
+- `cloud_id` — Reference to cloud story ID
+- `sync_status` — "synced" | "pending" | "conflict"
+
+### Encryption Helper
+
+```tsx
+// lib/vault/crypto.ts:177-188
+export async function encryptString(
+  plaintext: string,
+  dek: CryptoKey
+): Promise<{ ciphertext: string; iv: string }> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plaintext);
+  const { ciphertext, iv } = await encryptData(data.buffer as ArrayBuffer, dek);
+  return {
+    ciphertext: arrayBufferToBase64(ciphertext),
+    iv: arrayBufferToBase64(iv.buffer),
+  };
+}
+```
+
+<Note>
+  Each field (title, content) is encrypted separately with a unique IV. This prevents attacks that rely on identical ciphertexts.
+</Note>
+
+## Reading Encrypted Stories
+
+Use the `useLocalStories` hook to read encrypted stories reactively:
+
+```tsx
+import { useLocalStories } from "@/app/hooks/useLocalStories";
+
+function MyComponent() {
+  const { stories, isLoading } = useLocalStories();
+
+  if (isLoading) return <div>Loading...</div>;
+
+  return (
+    <ul>
+      {stories.map((story) => (
+        <li key={story.localId}>
+          <h3>{story.title}</h3>
+          <p>{story.content}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+The hook automatically:
+- Checks if vault is unlocked
+- Fetches encrypted records from IndexedDB
+- Decrypts title and content using the in-memory DEK
+- Returns plaintext stories reactively (updates on changes)
+
+## Security Benefits
+
+<CardGroup cols={2}>
+  <Card title="Zero-Knowledge" icon="eye-off">
+    Your PIN and DEK never reach the server. Only encrypted ciphertext is stored locally.
+  </Card>
+  <Card title="Brute-Force Resistance" icon="shield">
+    PBKDF2 with 100K iterations slows PIN guessing to ~10ms per attempt (~2.7 hours for full 6-digit search).
+  </Card>
+  <Card title="AES-256-GCM" icon="lock">
+    Industry-standard authenticated encryption with integrity verification (detects tampering).
+  </Card>
+  <Card title="Unique IVs" icon="refresh-cw">
+    Each encryption uses a fresh random 12-byte IV, preventing ciphertext analysis.
+  </Card>
+  <Card title="Key Wrapping" icon="package">
+    DEK is wrapped with KEK (AES-KW), not stored plaintext. Unwrapping requires correct PIN.
+  </Card>
+  <Card title="Memory-Only DEK" icon="cpu">
+    DEK is cleared from memory on lock/sign-out. Vault must be unlocked again to decrypt.
+  </Card>
+</CardGroup>
+
+## Changing Your PIN
+
+<Steps>
+  <Step title="Click Change PIN Button">
+    In the vault settings (when unlocked), click the key icon button to change your PIN.
+  </Step>
+
+  <Step title="Enter Old PIN">
+    The PIN modal appears with "Enter PIN" title. Enter your current PIN for verification.
+  </Step>
+
+  <Step title="Enter New PIN">
+    After verifying the old PIN, the modal re-opens with "Create PIN" title. Enter your new 6-digit PIN.
+  </Step>
+
+  <Step title="Re-Wrap DEK">
+    The vault re-wraps the DEK with a new KEK derived from the new PIN:
+
+    ```tsx
+    // lib/vault/keyManager.ts:145-181
+    export async function changePin(
+      userId: string,
+      oldPin: string,
+      newPin: string
+    ): Promise<void> {
+      const db = getVaultDb();
+
+      const record = await db.vaultKeys.get(userId);
+      if (!record) throw new Error("No vault found for this user");
+
+      // Verify old PIN
+      const salt = new Uint8Array(base64ToArrayBuffer(record.salt));
+      const oldHash = await hashPin(oldPin, salt);
+      if (oldHash !== record.pin_hash) {
+        throw new Error("Incorrect current PIN");
+      }
+
+      // Get current DEK from memory
+      const dek = getDEK(userId);
+
+      // Generate new salt for new PIN
+      const newSalt = generateSalt();
+      const newKek = await derivePinKey(newPin, newSalt);
+      const newWrappedDek = await wrapDEK(dek, newKek);
+      const newPinHash = await hashPin(newPin, newSalt);
+
+      // Update record
+      await db.vaultKeys.put({
+        userId,
+        salt: arrayBufferToBase64(newSalt.buffer),
+        wrapped_dek: arrayBufferToBase64(newWrappedDek),
+        pin_hash: newPinHash,
+        created_at: record.created_at,
+      });
+    }
+    ```
+
+    <Note>
+      Changing the PIN does **not** re-encrypt all stored stories. The DEK remains the same, only the KEK wrapping changes.
+    </Note>
+  </Step>
+</Steps>
+
+## Locking the Vault
+
+To lock the vault without signing out:
+
+1. Click the "Lock" button in vault settings
+2. The DEK is cleared from memory:
+   ```tsx
+   // lib/vault/keyManager.ts:110-112
+   export function lockVault(userId: string): void {
+     dekMap.delete(userId);
+   }
+   ```
+3. Encrypted stories remain in IndexedDB but are unreadable until unlocked
+4. The vault status changes to "Vault Locked"
+
+<Note>
+  Locking the vault does **not** prevent cloud stories from being accessed. It only locks the local encrypted copies.
+</Note>
+
+## Vault Guard Component
+
+Use `<VaultGuard>` to protect pages that require vault access:
+
+```tsx
+import { VaultGuard } from "@/components/vault/VaultGuard";
+
+function SecurePage() {
+  return (
+    <VaultGuard>
+      {/* This content only renders when vault is unlocked */}
+      <MySecureContent />
+    </VaultGuard>
+  );
+}
+```
+
+**Behavior:**
+- If vault is not set up → Shows "Vault Not Set Up" message
+- If vault is locked → Shows "Vault Locked" with unlock button
+- If vault is unlocked → Renders children
+- Use `optional={true}` prop to render children even when vault is not set up
+
+```tsx
+// components/vault/VaultGuard.tsx:17-88
+export function VaultGuard({
+  children,
+  optional = false,
+  fallback,
+}: VaultGuardProps) {
+  const { isSetup, isUnlocked, isLoading, error, setup, unlock } = useVault();
+
+  if (isLoading) return <Loader2 className="w-6 h-6 animate-spin" />;
+
+  if (!isSetup) {
+    if (optional) return <>{children}</>;
+    return fallback ?? <div>Vault Not Set Up</div>;
+  }
+
+  if (!isUnlocked) {
+    return (
+      <div>
+        <h3>Vault Locked</h3>
+        <Button onClick={() => setShowPin(true)}>Unlock Vault</Button>
+        <PinEntryModal mode="unlock" onSubmit={unlock} />
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+```
+
+## Limitations & Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Device-Specific" icon="smartphone">
+    Vault data is stored in browser IndexedDB. If you clear browser data or switch devices, you lose the vault. Cloud stories are unaffected.
+  </Card>
+  <Card title="No PIN Recovery" icon="alert-circle">
+    If you forget your PIN, the vault cannot be unlocked. You must delete the vault and set up a new one (losing local encrypted copies).
+  </Card>
+  <Card title="Non-Blocking" icon="check-circle">
+    Vault failures never block cloud saves. Stories are always saved to Supabase/IPFS regardless of vault status.
+  </Card>
+  <Card title="Manual Unlock" icon="key">
+    The vault must be manually unlocked after closing the browser. DEKs are not persisted across sessions.
+  </Card>
+</CardGroup>
+
+### Best Practices
+
+1. **Remember your PIN** — Write it down securely if needed
+2. **Lock vault when sharing device** — Prevents unauthorized access to local copies
+3. **Don't rely on vault as primary storage** — Cloud backup is the source of truth
+4. **Regular browser backups** — Export IndexedDB if you need to migrate devices
+5. **Test unlock before relying on vault** — Verify you can unlock after setup
+
+## Technical Details
+
+### IndexedDB Schema
+
+```tsx
+// lib/vault/db.ts
+import Dexie, { Table } from "dexie";
+
+export interface VaultKeyRecord {
+  userId: string; // Primary key
+  salt: string; // Base64-encoded salt for PBKDF2
+  wrapped_dek: string; // Base64-encoded wrapped DEK (AES-KW)
+  pin_hash: string; // SHA-256 hash of PIN + salt (for verification)
+  created_at: string; // ISO timestamp
+}
+
+export interface LocalStoryRecord {
+  localId: string; // Primary key (UUID)
+  userId: string; // Foreign key to user
+  encrypted_title: string; // Base64 AES-256-GCM ciphertext
+  title_iv: string; // Base64 IV for title
+  encrypted_content: string; // Base64 AES-256-GCM ciphertext
+  content_iv: string; // Base64 IV for content
+  checksum: string; // SHA-256 of plaintext (integrity check)
+  cloud_id?: string; // Reference to Supabase story ID
+  sync_status: "synced" | "pending" | "conflict";
+  is_public: boolean;
+  story_date: string;
+  created_at: string;
+  updated_at: string;
+}
+
+class VaultDatabase extends Dexie {
+  vaultKeys!: Table<VaultKeyRecord, string>;
+  stories!: Table<LocalStoryRecord, string>;
+
+  constructor() {
+    super("VaultDB");
+    this.version(1).stores({
+      vaultKeys: "userId",
+      stories: "localId, userId, cloud_id",
+    });
+  }
+}
+```
+
+### Web Crypto API Usage
+
+All crypto operations use `window.crypto.subtle`:
+
+```tsx
+// lib/vault/crypto.ts
+
+// Key derivation
+await crypto.subtle.deriveKey({
+  name: "PBKDF2",
+  salt: salt,
+  iterations: 100_000,
+  hash: "SHA-256",
+}, baseKey, { name: "AES-KW", length: 256 }, false, ["wrapKey", "unwrapKey"]);
+
+// Key wrapping
+await crypto.subtle.wrapKey("raw", dek, kek, "AES-KW");
+
+// Data encryption
+await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, dek, plaintext);
+```
+
+<Warning>
+  Vault operations are **browser-only**. Never import vault modules in API routes or server components — they will fail at build time.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Recording Stories" icon="microphone" href="/guides/recording-stories">
+    Learn how vault save works during recording
+  </Card>
+  <Card title="Library Management" icon="book-open" href="/guides/library-management">
+    View your encrypted local stories
+  </Card>
+  <Card title="NFT Minting" icon="image" href="/guides/nft-minting">
+    Compile and mint story books
+  </Card>
+  <Card title="Earning Tokens" icon="coins" href="/guides/earning-tokens">
+    Monetize your stories
+  </Card>
+</CardGroup>

@@ -1,0 +1,127 @@
+---
+title: 'Enhance Text'
+api: 'POST /api/ai/enhance'
+description: 'Improve grammar, flow, and vocabulary using Gemini 2.5 Flash'
+---
+
+## Overview
+
+Enhances journal entries by fixing grammar and spelling errors, improving flow and vocabulary while preserving the original tone and meaning. Powered by Google Gemini 2.5 Flash.
+
+## Authentication
+
+Requires Bearer token authentication.
+
+```bash
+Authorization: Bearer YOUR_SUPABASE_JWT
+```
+
+## Request
+
+<ParamField body="text" type="string" required>
+  The journal entry text to enhance. Maximum 50,000 characters.
+</ParamField>
+
+### Limits
+
+- **Maximum length:** 50,000 characters
+- **Model:** Gemini 2.5 Flash
+- **Enhancement focus:** Grammar, spelling, flow, vocabulary
+- **Tone preservation:** Original personal voice maintained
+
+## Response
+
+<ResponseField name="text" type="string">
+  The enhanced version of the input text.
+</ResponseField>
+
+## Example
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://your-domain.com/api/ai/enhance \
+  -H "Authorization: Bearer YOUR_SUPABASE_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Today was good. I done alot of work and feeling productive. Met with team and we discuss the new features."
+  }'
+```
+
+```javascript JavaScript
+const response = await fetch('/api/ai/enhance', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    text: "Today was good. I done alot of work and feeling productive. Met with team and we discuss the new features."
+  })
+});
+
+const { text } = await response.json();
+console.log('Enhanced:', text);
+```
+
+</CodeGroup>
+
+### Success Response
+
+```json
+{
+  "text": "Today was a good day. I completed a lot of work and felt productive. I met with my team and we discussed the new features."
+}
+```
+
+### Error Responses
+
+<ResponseExample>
+
+```json 400 Bad Request - No text provided
+{
+  "error": "No text provided"
+}
+```
+
+```json 400 Bad Request - Text too long
+{
+  "error": "Text exceeds maximum length of 50000 characters"
+}
+```
+
+```json 500 Internal Server Error
+{
+  "error": "Failed to enhance text"
+}
+```
+
+```json 500 Internal Server Error - Configuration error
+{
+  "error": "Server configuration error"
+}
+```
+
+</ResponseExample>
+
+## Enhancement Guidelines
+
+The AI editor follows these principles:
+
+1. **Fix errors:** Corrects grammar and spelling mistakes
+2. **Improve flow:** Enhances readability and sentence structure
+3. **Upgrade vocabulary:** Uses more precise words while keeping the tone natural
+4. **Preserve meaning:** Does not add fictional events or change core message
+5. **Keep tone:** Maintains the original personal, authentic voice
+6. **Clean output:** Returns only the enhanced text without quotes or markdown
+
+## Rate Limiting
+
+Subject to API rate limits defined in middleware (10 requests/minute for AI endpoints).
+
+## Use Cases
+
+- **Grammar checking:** Fix typos and grammatical errors
+- **Professional polish:** Prepare journal entries for sharing
+- **Clarity improvement:** Make thoughts more coherent
+- **Quick editing:** Save time on manual proofreading

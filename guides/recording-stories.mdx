@@ -1,0 +1,422 @@
+---
+title: Recording Stories
+description: Step-by-step guide to capturing your memories with voice recording and AI transcription
+---
+
+Record your personal stories with voice capture, AI transcription, and metadata enrichment. eStory makes it easy to preserve your memories with professional-quality transcription powered by ElevenLabs Scribe.
+
+## Getting Started
+
+<Steps>
+  <Step title="Sign In">
+    Connect your Web3 wallet (via RainbowKit) or sign in with Google. Authentication is required to access the recording page and save stories.
+  </Step>
+
+  <Step title="Navigate to Record Page">
+    Go to `/record` or click the "Record" button in the navigation. You'll see the recording interface with a large microphone button.
+  </Step>
+</Steps>
+
+## Recording Your Story
+
+<Steps>
+  <Step title="Start Recording">
+    Tap the large circular microphone button to begin recording. The button will turn red and display a pulsing animation with a recording timer.
+
+    ```tsx
+    // RecordPageClient.tsx:141
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 16000,
+      },
+    });
+    ```
+
+    <Note>
+      The recording uses `MediaRecorder` with echo cancellation and noise suppression enabled for optimal audio quality.
+    </Note>
+  </Step>
+
+  <Step title="Speak Naturally">
+    Talk naturally while the timer runs. The interface shows:
+    - Red pulsing indicator with "Recording" badge
+    - Live duration counter (MM:SS format)
+    - Animated pulse rings around the microphone button
+
+    **Recording Tips:**
+    - Speak clearly and at a moderate pace
+    - Find a quiet environment to minimize background noise
+    - The audio is optimized for 16kHz sample rate with noise suppression
+  </Step>
+
+  <Step title="Stop Recording">
+    Tap the square button to stop recording. The audio will automatically begin transcription using ElevenLabs Scribe.
+
+    ```tsx
+    // RecordPageClient.tsx:191
+    const formData = new FormData();
+    formData.append("file", blob);
+    const res = await fetch("/api/ai/transcribe", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    ```
+  </Step>
+</Steps>
+
+## AI Transcription
+
+After stopping the recording, eStory automatically transcribes your audio using **ElevenLabs Scribe**:
+
+- Multi-language support (detects language automatically)
+- Real-time processing with loading indicator
+- Toast notifications show transcription progress
+- Transcribed text appears in the content textarea
+
+<Note>
+  The transcription happens via `/api/ai/transcribe` which is protected by Bearer token authentication and rate-limited to 10 requests per minute.
+</Note>
+
+## Enhancing Your Story
+
+After transcription completes, you can optionally enhance the text with AI:
+
+<Steps>
+  <Step title="Review Transcription">
+    The raw transcribed text appears in the content textarea. You can manually edit it before enhancement if needed.
+  </Step>
+
+  <Step title="Click 'Enhance with AI'">
+    This button uses Google Gemini 2.5 Flash to polish your story:
+    - Improves grammar and punctuation
+    - Enhances narrative flow
+    - Preserves your original meaning and voice
+
+    ```tsx
+    // RecordPageClient.tsx:244
+    const res = await fetch("/api/ai/enhance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ text: transcribedText }),
+    });
+    ```
+  </Step>
+
+  <Step title="Revert if Needed">
+    After enhancement, a "Revert" button appears. Click it to restore the original transcribed text if you prefer the unpolished version.
+  </Step>
+</Steps>
+
+<Warning>
+  Enhancement is irreversible unless you use the Revert button immediately after. The original text is only stored temporarily in `preEnhanceText` state.
+</Warning>
+
+## Adding Metadata
+
+Before saving, enrich your story with metadata:
+
+### Title
+
+Give your story a descriptive title:
+- Default: "Journal Entry - [Date]"
+- Editable text input
+- Required to save
+
+### Date of Memory
+
+**Backdating Support:** You can set the story date to any past date (or today):
+
+```tsx
+// RecordPageClient.tsx:73
+const [storyDate, setStoryDate] = useState(
+  new Date().toISOString().split("T")[0]
+);
+```
+
+This allows you to record memories from the past and organize them chronologically in your library.
+
+### Visibility
+
+Choose who can see your story:
+
+<CardGroup cols={2}>
+  <Card title="Private" icon="lock">
+    Only visible to you. Default setting for personal memories.
+  </Card>
+  <Card title="Public" icon="unlock">
+    Visible on the social feed. Share your story with the community.
+  </Card>
+</CardGroup>
+
+The visibility toggle shows:
+- 🔒 **Private** (gray lock icon) - Saved to your library only
+- 🔓 **Public** (green unlock icon) - Published to social feed
+
+## Saving Your Story
+
+<Steps>
+  <Step title="Click Save">
+    The save button shows:
+    - "Save Privately" (if visibility is Private)
+    - "Publish & Save" (if visibility is Public)
+
+    The button is disabled unless:
+    - Title is not empty
+    - Content is not empty
+    - No other processing is in progress
+  </Step>
+
+  <Step title="IPFS Upload">
+    Your story is pinned to IPFS via Pinata for immutable storage:
+
+    ```tsx
+    // RecordPageClient.tsx:345
+    const ipfsMetadata = {
+      title: entryTitle,
+      content: transcribedText,
+      author: authInfo.wallet_address,
+      audio: audioUrl,
+      date: storyDate,        // User-selected date
+      timestamp: new Date().toISOString(), // Actual upload time
+      is_public: isPublic,
+      app: "EStory DApp",
+    };
+    const ipfsResult = await ipfsService.uploadMetadata(ipfsMetadata, token);
+    ```
+
+    <Note>
+      IPFS pinning ensures your story is permanently stored on decentralized infrastructure. The hash is saved to the database for retrieval.
+    </Note>
+  </Step>
+
+  <Step title="Database Save">
+    The story is saved to Supabase via `/api/stories` with:
+    - Title, content, and audio URL
+    - Story date (backdated) and creation timestamp
+    - Visibility flag (`is_public`)
+    - IPFS hash for immutable reference
+
+    Audio files are uploaded separately via `/api/audio/upload` (bypasses RLS).
+  </Step>
+
+  <Step title="Local Vault Save (Optional)">
+    If your local vault is unlocked, the story is automatically encrypted and saved locally:
+
+    ```tsx
+    // RecordPageClient.tsx:394-422
+    if (userId && await checkVaultSetup(userId) && checkVaultUnlocked(userId)) {
+      const dek = getDEK(userId);
+      const encTitle = await encryptString(entryTitle, dek);
+      const encContent = await encryptString(transcribedText, dek);
+      
+      const record: LocalStoryRecord = {
+        localId: crypto.randomUUID(),
+        userId,
+        encrypted_title: encTitle.ciphertext,
+        title_iv: encTitle.iv,
+        encrypted_content: encContent.ciphertext,
+        content_iv: encContent.iv,
+        cloud_id: insertedStory?.id,
+        sync_status: "synced",
+        is_public: isPublic,
+        story_date: backdatedStoryDate,
+      };
+      
+      await db.stories.put(record);
+    }
+    ```
+
+    Vault save is non-blocking — cloud save success is not affected by vault failures.
+  </Step>
+
+  <Step title="AI Analysis (Background)">
+    After saving, AI analysis is triggered asynchronously:
+
+    ```tsx
+    // RecordPageClient.tsx:430-440
+    fetch("/api/ai/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        storyId: insertedStory.id,
+        storyText: transcribedText,
+      }),
+      keepalive: true,
+    }).catch((err) => console.warn("Analysis trigger failed:", err));
+    ```
+
+    This extracts metadata like themes, life domain, and brief insights using Gemini AI. Results appear in the Library view.
+  </Step>
+</Steps>
+
+## Draft Persistence
+
+Your work is never lost! Drafts are automatically saved to `sessionStorage`:
+
+```tsx
+// RecordPageClient.tsx:117-126
+const saveDraft = useCallback(() => {
+  if (!transcribedText.trim() && !entryTitle.trim()) {
+    sessionStorage.removeItem(DRAFT_KEY);
+    return;
+  }
+  sessionStorage.setItem(
+    DRAFT_KEY,
+    JSON.stringify({ transcribedText, entryTitle, storyDate, isPublic })
+  );
+}, [transcribedText, entryTitle, storyDate, isPublic]);
+```
+
+- Drafts auto-save 500ms after you stop typing
+- Restored automatically when you return to the page
+- Cleared after successful save
+- Uses `sessionStorage` (survives page reloads, not browser close)
+
+## Additional Features
+
+### Read Aloud
+
+Preview your story using browser text-to-speech:
+- Click the "Read Aloud" button
+- Uses `window.speechSynthesis` (built-in browser TTS)
+- Click "Stop" to cancel playback
+
+### Loading States
+
+The record page uses **three separate loading states** (not a single `isProcessing`):
+
+```tsx
+// RecordPageClient.tsx:79-86
+const [isTranscribing, setIsTranscribing] = useState(false);
+const [isEnhancing, setIsEnhancing] = useState(false);
+const [isSaving, setIsSaving] = useState(false);
+
+const isBusy = isTranscribing || isEnhancing || isSaving;
+```
+
+- `isTranscribing` — ElevenLabs transcription in progress (shows "Transcribing..." badge)
+- `isEnhancing` — AI text enhancement in progress (shows "Enhancing..." badge)
+- `isSaving` — Cloud + vault save in progress (shows spinner in save button)
+- `isBusy` — Derived state, disables all inputs
+
+<Note>
+  The save button spinner only shows during `isSaving`, not during transcription or enhancement.
+</Note>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Recording Quality" icon="microphone">
+    - Find a quiet environment
+    - Speak clearly and at a moderate pace
+    - Keep recording under 5 minutes for best results
+    - Test microphone permissions before important recordings
+  </Card>
+
+  <Card title="Privacy & Security" icon="shield">
+    - Use Private visibility for sensitive memories
+    - Enable local vault for offline encrypted backups
+    - Stories are pinned to IPFS (immutable, not deletable)
+    - Public stories appear on the social feed
+  </Card>
+
+  <Card title="Metadata" icon="tag">
+    - Use descriptive titles for easier searching
+    - Backdate stories to match the memory date
+    - AI analysis extracts themes automatically
+    - Add tags later in the Library view
+  </Card>
+
+  <Card title="Workflow" icon="zap">
+    - Record → Transcribe → Enhance → Review → Save
+    - Edit transcription manually before enhancement
+    - Use Read Aloud to catch errors
+    - Drafts are saved automatically
+  </Card>
+</CardGroup>
+
+## Technical Architecture
+
+### Audio Processing
+
+```tsx
+// RecordPageClient.tsx:142-148
+const stream = await navigator.mediaDevices.getUserMedia({
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    sampleRate: 16000,
+  },
+});
+```
+
+- `MediaRecorder` API with WebM format
+- Audio chunks accumulated in memory
+- Blob created on stop for upload
+
+### API Routes
+
+| Route | Method | Purpose | Auth | Rate Limit |
+|-------|--------|---------|------|------------|
+| `/api/ai/transcribe` | POST | ElevenLabs Scribe transcription | Bearer token | 10/min |
+| `/api/ai/enhance` | POST | Gemini text enhancement | Bearer token | 10/min |
+| `/api/ai/analyze` | POST | Background metadata extraction | Bearer token | 10/min |
+| `/api/stories` | POST | Save story to database | Bearer token | 20/min |
+| `/api/audio/upload` | POST | Upload audio file | Bearer token | 20/min |
+
+### Security
+
+All routes are protected by layered security:
+
+```
+Layer 4: Ownership Verification — User can only modify their own resources
+Layer 3: Input Validation — File size, MIME type, text length limits
+Layer 2: Bearer Token Auth — validateAuthOrReject() via lib/auth.ts
+Layer 1: Rate Limiting — middleware.ts (AI=10/min, Auth=20/min)
+Layer 0: Security Headers — CSP, X-Frame-Options, CORS via next.config
+```
+
+## Troubleshooting
+
+### Microphone Access Denied
+- Check browser permissions (Settings → Privacy → Microphone)
+- Refresh the page after granting permissions
+- Try a different browser if issues persist
+
+### Transcription Failed
+- Ensure audio is at least 1 second long
+- Check network connection
+- Rate limit: 10 requests per minute
+- Audio must be under 25MB
+
+### Save Failed
+- Verify you're signed in
+- Check that title and content are not empty
+- IPFS upload requires network connection
+- Check browser console for specific errors
+
+### Vault Not Saving
+- Vault save is optional and non-blocking
+- Ensure vault is unlocked in Profile Settings
+- Vault failures don't affect cloud save
+- Check console for vault-specific errors
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Library Management" icon="book-open" href="/guides/library-management">
+    View and organize your recorded stories
+  </Card>
+  <Card title="Vault Setup" icon="shield" href="/guides/vault-setup">
+    Set up local encrypted storage
+  </Card>
+  <Card title="NFT Minting" icon="image" href="/guides/nft-minting">
+    Compile stories into NFT books
+  </Card>
+  <Card title="Earning Tokens" icon="coins" href="/guides/earning-tokens">
+    Earn $STORY tokens from your content
+  </Card>
+</CardGroup>

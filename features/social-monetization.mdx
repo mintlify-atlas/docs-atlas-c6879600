@@ -1,0 +1,519 @@
+---
+title: Social Features & Token Economy
+description: $STORY token, likes, tips, follows, and paywall monetization via StoryProtocol smart contract
+icon: coins
+---
+
+## Overview
+
+eStory combines social features with Web3 tokenomics to reward storytellers. The $STORY ERC20 token enables tips, paywalls, and NFT minting, while the StoryProtocol smart contract handles all on-chain transactions. Users can like stories, follow creators, and pay to unlock premium content.
+
+## $STORY Token Economy
+
+### Token Details
+
+<ParamField path="name" type="string">
+  eStory Token
+</ParamField>
+
+<ParamField path="symbol" type="string">
+  $STORY
+</ParamField>
+
+<ParamField path="standard" type="ERC20">
+  OpenZeppelin ERC20 implementation
+</ParamField>
+
+<ParamField path="network" type="Base L2">
+  Deployed on Base Sepolia (testnet) and Base Mainnet (production)
+</ParamField>
+
+<ParamField path="max_supply" type="uint256">
+  100,000,000 STORY (100 million)
+</ParamField>
+
+<ParamField path="decimals" type="uint8">
+  18 (standard ERC20)
+</ParamField>
+
+<ParamField path="contract_address" type="address">
+  `0xf9eDD76B...` (see `lib/contracts.ts`)
+</ParamField>
+
+### Token Distribution
+
+| Allocation | Amount | Purpose |
+|------------|--------|----------|
+| **Community Rewards** | 40M (40%) | Weekly story contests, user referrals, engagement rewards |
+| **Creator Fund** | 25M (25%) | Tips pool, verified creator grants |
+| **Team & Advisors** | 15M (15%) | 2-year vesting |
+| **Liquidity Pool** | 10M (10%) | DEX liquidity (Uniswap V3 on Base) |
+| **Treasury** | 10M (10%) | Future development, partnerships |
+
+<Info>
+  Max supply is minted at deployment. No new tokens can be created. Team tokens vest linearly over 2 years.
+</Info>
+
+## StoryProtocol Contract
+
+### Contract Architecture
+
+The `StoryProtocol` contract manages tips and paywall payments:
+
+```solidity
+contract StoryProtocol is ReentrancyGuard, Pausable, AccessControl {
+  using SafeERC20 for IERC20;
+  
+  IERC20 public immutable storyToken;
+  
+  event TipSent(address indexed from, address indexed to, uint256 amount, uint256 indexed storyId);
+  event ContentUnlocked(address indexed payer, address indexed author, uint256 amount, uint256 indexed contentId);
+  
+  function tipCreator(address creator, uint256 amount, uint256 storyId) external nonReentrant whenNotPaused;
+  function payPaywall(address author, uint256 amount, uint256 contentId) external nonReentrant whenNotPaused;
+}
+```
+
+**Security features:**
+- **ReentrancyGuard** - Prevents reentrancy attacks
+- **SafeERC20** - Prevents silent transfer failures
+- **Pausable** - Emergency stop mechanism
+- **AccessControl** - Role-based admin functions
+
+### Tipping Flow
+
+<Steps>
+  <Step title="User Approves Token">
+    User calls `approve()` on eStoryToken contract to allow StoryProtocol to spend tokens.
+  </Step>
+  
+  <Step title="Call tipCreator()">
+    User calls `tipCreator(creatorAddress, amount, storyId)` on StoryProtocol.
+  </Step>
+  
+  <Step title="Transfer Tokens">
+    Contract transfers tokens from tipper to creator via `safeTransferFrom()`.
+  </Step>
+  
+  <Step title="Emit Event">
+    `TipSent` event is emitted with sender, receiver, amount, and story ID.
+  </Step>
+  
+  <Step title="Backend Indexes">
+    Backend listener reads event, updates Supabase `tips` table, creates notification.
+  </Step>
+</Steps>
+
+#### Frontend Integration
+
+```typescript
+import { useStoryProtocol } from "@/app/hooks/useStoryProtocol";
+import { useEStoryToken } from "@/app/hooks/useEStoryToken";
+import { parseUnits } from "viem";
+
+const { approve } = useEStoryToken();
+const { tipCreator } = useStoryProtocol();
+
+const handleTip = async (creatorAddress: string, storyId: string, amount: string) => {
+  const amountWei = parseUnits(amount, 18); // e.g., "10" → 10e18
+  
+  // 1. Approve StoryProtocol to spend tokens
+  await approve({
+    spender: STORY_PROTOCOL_ADDRESS,
+    amount: amountWei,
+  });
+  
+  // 2. Send tip
+  await tipCreator({
+    creator: creatorAddress as `0x${string}`,
+    amount: amountWei,
+    storyId: BigInt(storyId),
+  });
+  
+  toast.success(`Tipped ${amount} STORY!`);
+};
+```
+
+<Warning>
+  **Gas costs**: Each tip requires two transactions (approve + tipCreator). Consider implementing multicall or permit (EIP-2612) for single-transaction tips.
+</Warning>
+
+## Social Features
+
+### Likes
+
+Users can like stories via `/api/social/like`:
+
+**Request:**
+```typescript
+POST /api/social/like
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "storyId": "123e4567-e89b-12d3-a456-426614174000"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "storyId": "123e4567-e89b-12d3-a456-426614174000",
+    "isLiked": true,
+    "totalLikes": 42,
+    "timestamp": "2026-03-03T14:32:18Z"
+  },
+  "message": "Story liked!"
+}
+```
+
+**Database operations:**
+1. **Toggle like record** - Insert/delete in `likes` table (upsert with conflict handling)
+2. **Update count** - Increment/decrement `stories.likes` column
+3. **Create notification** - Insert in `notifications` table (if not self-like)
+
+<CodeGroup>
+```typescript Like Logic
+const { data: existingLike } = await admin
+  .from("likes")
+  .select("id")
+  .eq("user_id", authenticatedUserId)
+  .eq("story_id", storyId)
+  .maybeSingle();
+
+if (existingLike) {
+  // Unlike: delete like record
+  await admin.from("likes").delete().eq("id", existingLike.id);
+  await admin.from("stories").update({ likes: Math.max(0, currentLikes - 1) }).eq("id", storyId);
+  isLiked = false;
+} else {
+  // Like: insert like record
+  await admin.from("likes").upsert({ user_id: authenticatedUserId, story_id: storyId });
+  await admin.from("stories").update({ likes: currentLikes + 1 }).eq("id", storyId);
+  
+  // Create notification
+  await admin.from("notifications").insert({
+    user_id: storyAuthorId,
+    type: "like",
+    title: "New Like",
+    message: `${likerName} liked your story`,
+    story_id: storyId,
+  });
+  
+  isLiked = true;
+}
+```
+
+```typescript Optimistic UI Update
+const [isLiked, setIsLiked] = useState(initialLiked);
+const [likeCount, setLikeCount] = useState(initialCount);
+
+const handleLike = async () => {
+  // Optimistic update
+  setIsLiked(!isLiked);
+  setLikeCount((prev) => (isLiked ? prev - 1 : prev + 1));
+  
+  try {
+    const res = await fetch("/api/social/like", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ storyId }),
+    });
+    
+    const { data } = await res.json();
+    
+    // Sync with server response
+    setIsLiked(data.isLiked);
+    setLikeCount(data.totalLikes);
+  } catch (err) {
+    // Rollback on error
+    setIsLiked(!isLiked);
+    setLikeCount((prev) => (isLiked ? prev + 1 : prev - 1));
+    toast.error("Failed to like story");
+  }
+};
+```
+</CodeGroup>
+
+### Follows
+
+Users can follow other creators via `/api/social/follow`:
+
+**Request:**
+```typescript
+POST /api/social/follow
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "follower_wallet": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+  "followed_wallet": "0x1234567890abcdef1234567890abcdef12345678"
+}
+```
+
+**Response:**
+```json
+{
+  "isFollowing": true,
+  "followers_count": 156
+}
+```
+
+**Database operations:**
+1. **Ownership check** - Verify authenticated user owns `follower_wallet` (prevents impersonation)
+2. **Toggle follow record** - Insert/delete in `follows` table
+3. **Update count** - Increment/decrement `users.followers_count`
+4. **Create notification** - Insert in `notifications` table (if new follow)
+
+<Info>
+  Follows are wallet-based (not user ID-based) to support multi-wallet scenarios and decentralized identity.
+</Info>
+
+### Batch Follow Status Check
+
+Check follow status for multiple wallets in one request:
+
+**Request:**
+```typescript
+GET /api/social/follow?follower_wallet=0x742d35...&followed_wallets=0x1234...,0x5678...,0x9abc...
+Authorization: Bearer {token}
+```
+
+**Response:**
+```json
+{
+  "following": {
+    "0x1234567890abcdef1234567890abcdef12345678": true,
+    "0x567890abcdef1234567890abcdef123456789012": false,
+    "0x9abcdef1234567890abcdef12345678901234567": true
+  }
+}
+```
+
+**Use case:** Display follow buttons on story feed without N+1 queries.
+
+## Paywall System
+
+### Unlocking Premium Content
+
+Creators can gate stories behind token payments:
+
+<Steps>
+  <Step title="Creator Sets Paywall">
+    Creator marks story as `paywall: true` and sets `paywall_price` (e.g., 100 STORY).
+  </Step>
+  
+  <Step title="Public Preview">
+    Non-paying users see truncated content (first 200 characters) + "Unlock for X STORY" button.
+  </Step>
+  
+  <Step title="User Approves & Pays">
+    User approves tokens, calls `payPaywall(authorAddress, amount, contentId)` on StoryProtocol.
+  </Step>
+  
+  <Step title="Backend Indexes Event">
+    `ContentUnlocked` event listener updates `paywall_unlocks` table.
+  </Step>
+  
+  <Step title="Full Content Revealed">
+    User can now read full story. Unlock persists permanently in database.
+  </Step>
+</Steps>
+
+### Paywall Enforcement
+
+Backend checks unlock status before returning story content:
+
+```typescript
+const { data: unlock } = await supabase
+  .from("paywall_unlocks")
+  .select("id")
+  .eq("story_id", storyId)
+  .eq("user_id", authenticatedUserId)
+  .maybeSingle();
+
+if (story.paywall && !unlock && story.author_id !== authenticatedUserId) {
+  // Return truncated content
+  return {
+    ...story,
+    content: story.content.slice(0, 200) + "...",
+    is_locked: true,
+    unlock_price: story.paywall_price,
+  };
+}
+
+// Return full content
+return { ...story, is_locked: false };
+```
+
+<Warning>
+  **Client-side enforcement is NOT secure!** Always validate unlock status on the server before returning full content.
+</Warning>
+
+### Revenue Sharing
+
+Paywall payments go directly to authors (100% creator earnings):
+
+```solidity
+function payPaywall(address author, uint256 amount, uint256 contentId) external {
+  require(amount > 0, "Amount must be > 0");
+  storyToken.safeTransferFrom(msg.sender, author, amount); // Direct transfer
+  emit ContentUnlocked(msg.sender, author, amount, contentId);
+}
+```
+
+**No platform fee** - eStory takes 0% of paywall revenue. Future v2 may add optional 5% fee for featured content.
+
+## Token Utility Summary
+
+<CardGroup cols={2}>
+  <Card title="Tipping" icon="hand-holding-dollar">
+    Send $STORY to creators for stories you love. No minimum or maximum limits.
+  </Card>
+  
+  <Card title="Paywall Unlocks" icon="lock-open">
+    Pay to read premium stories. Price set by creator (typically 10-1000 STORY).
+  </Card>
+  
+  <Card title="NFT Minting Fee" icon="image">
+    Pay 0.001 ETH (not $STORY) to mint stories as NFTs via StoryNFT contract.
+  </Card>
+  
+  <Card title="Governance (Future)" icon="vote-yea">
+    Token holders will vote on weekly contest winners and feature requests (Phase 3).
+  </Card>
+</CardGroup>
+
+## Notifications System
+
+### Event Triggers
+
+All social actions create real-time notifications:
+
+| Event | Type | Message |
+|-------|------|----------|
+| Like | `like` | "{name} liked your story" |
+| Tip | `tip` | "{name} tipped you {amount} STORY" |
+| Follow | `follow` | "{name} started following you" |
+| Paywall unlock | `unlock` | "{name} unlocked your story \"{title}\"" |
+| Comment (Phase 2) | `comment` | "{name} commented on your story" |
+
+### Notification Schema
+
+```typescript
+interface Notification {
+  id: string;
+  user_id: string;          // Recipient
+  type: "like" | "tip" | "follow" | "unlock" | "comment";
+  title: string;            // "New Like", "New Tip", etc.
+  message: string;          // User-friendly description
+  story_id?: string;        // Optional story reference
+  read: boolean;            // Read status
+  created_at: string;       // ISO 8601
+}
+```
+
+### Frontend Hook
+
+```typescript
+import { useNotifications } from "@/app/hooks/useNotifications";
+
+const { notifications, unreadCount, markAsRead, deleteNotification } = useNotifications();
+
+// Auto-refresh every 30 seconds
+useEffect(() => {
+  const interval = setInterval(() => {
+    notifications.refetch();
+  }, 30_000);
+  return () => clearInterval(interval);
+}, []);
+```
+
+## Analytics & Leaderboards
+
+### Creator Stats
+
+Each user profile displays earnings and engagement:
+
+```typescript
+interface CreatorStats {
+  total_stories: number;
+  total_likes: number;
+  total_tips_received: string;     // Wei format (BigInt)
+  total_followers: number;
+  total_paywall_earnings: string;  // Wei format
+  top_story_id: string;            // Most liked story
+  weekly_rank?: number;            // Contest ranking (if active)
+}
+```
+
+### Weekly Contest
+
+Top stories each week win prizes:
+
+**Ranking algorithm:**
+```typescript
+const score = (
+  likes * 1.0 +
+  tips_received * 0.5 +
+  paywall_unlocks * 2.0 +
+  comments * 1.5
+) * recency_factor;
+
+// recency_factor = 1.0 for this week, decays to 0.1 over 7 days
+const recency_factor = Math.max(0.1, 1 - (daysSincePublished / 7));
+```
+
+**Prizes:**
+- **1st place**: 1000 STORY + featured NFT mint (free)
+- **2nd place**: 500 STORY
+- **3rd place**: 250 STORY
+- **Top 10**: 100 STORY each
+
+## Integration Points
+
+<CardGroup cols={2}>
+  <Card title="Voice Journaling" icon="mic" href="/features/voice-journaling">
+    Public stories appear in social feed with like/tip buttons
+  </Card>
+  
+  <Card title="AI Analysis" icon="brain" href="/features/ai-analysis">
+    Emotional tone and themes filter social feed discovery
+  </Card>
+  
+  <Card title="Blockchain Storage" icon="globe" href="/features/blockchain-storage">
+    Tipped stories can be minted as NFTs with creator royalties
+  </Card>
+  
+  <Card title="Local Vault" icon="lock" href="/features/local-vault">
+    Private stories never appear in social feed or paywall system
+  </Card>
+</CardGroup>
+
+## Implementation Reference
+
+**Source files:**
+- `contracts/StoryProtocol.sol:1-61` - Tip & paywall contract
+- `contracts/eStoryToken.sol` - ERC20 token contract
+- `app/api/social/like/route.ts:1-135` - Like endpoint
+- `app/api/social/follow/route.ts:1-211` - Follow endpoint
+- `app/api/tip/route.ts` - Tip event indexer
+- `app/hooks/useStoryProtocol.ts` - Contract interaction hook
+- `app/hooks/useEStoryToken.ts` - Token balance & approval hook
+- `app/hooks/useNotifications.ts` - Notification CRUD
+
+**Smart contract addresses** (Base Sepolia):
+```typescript
+export const ESTORY_TOKEN_ADDRESS = "0xf9eDD76B...";
+export const STORY_PROTOCOL_ADDRESS = "0xA51a4cA0...";
+export const STORY_NFT_ADDRESS = "0x6D37ebc5...";
+```
+
+**Database tables:**
+- `likes` - User-story like records
+- `follows` - Follower-followed wallet pairs
+- `tips` - Tip transaction history
+- `paywall_unlocks` - Unlocked premium content
+- `notifications` - User notification feed

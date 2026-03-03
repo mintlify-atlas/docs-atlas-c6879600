@@ -1,0 +1,425 @@
+---
+title: AI-Powered Story Analysis
+description: Extract themes, emotions, and insights from journal entries using Google Gemini 2.5 Flash
+icon: brain
+---
+
+## Overview
+
+eStory uses Google's Gemini 2.5 Flash to analyze journal entries and extract structured metadata. The system identifies themes, emotional tone, life domains, and entities (people, places, time references) while generating a brief AI insight about the story's significance.
+
+## Analysis Architecture
+
+### Processing Pipeline
+
+<Steps>
+  <Step title="Story Submission">
+    User saves a story. The record page triggers background analysis via `/api/ai/analyze`.
+  </Step>
+  
+  <Step title="Content Validation">
+    API validates story length (50-10,000 characters) and checks for duplicate analysis.
+  </Step>
+  
+  <Step title="Gemini API Call">
+    Story text is sent to Gemini 2.5 Flash with a structured prompt for metadata extraction.
+  </Step>
+  
+  <Step title="JSON Parsing & Validation">
+    Response is parsed, validated against schemas, and sanitized with defaults.
+  </Step>
+  
+  <Step title="Database Storage">
+    Metadata is upserted to `story_metadata` table via Supabase admin client.
+  </Step>
+</Steps>
+
+### Fire-and-Forget Trigger
+
+Analysis is triggered immediately after story save but doesn't block the save operation:
+
+```typescript
+if (insertedStory?.id) {
+  fetch("/api/ai/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: JSON.stringify({
+      storyId: insertedStory.id,
+      storyText: transcribedText,
+    }),
+    keepalive: true, // Ensures request completes even if page navigates
+  }).catch((err) => console.warn("Analysis trigger failed:", err));
+}
+```
+
+<Info>
+  The `keepalive: true` flag ensures the analysis request completes even if the user navigates away from the page.
+</Info>
+
+## Metadata Extraction
+
+### Google Gemini 2.5 Flash Integration
+
+The analysis endpoint uses Gemini with a structured prompt:
+
+```typescript
+const genAI = new GoogleGenerativeAI(apiKey);
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+const prompt = ANALYSIS_PROMPT.replace("{STORY_TEXT}", storyText);
+const result = await model.generateContent(prompt);
+const analysisText = result.response.text();
+```
+
+**Retry logic with exponential backoff:**
+- **3 attempts maximum**
+- **Delays**: 1s, 2s, 4s between retries
+- **Handles**: Rate limits (429), timeouts, transient failures
+
+### Extracted Metadata Fields
+
+<ParamField path="themes" type="string[]">
+  1-5 key themes from the story (e.g., "growth", "loss", "discovery", "connection")
+</ParamField>
+
+<ParamField path="emotional_tone" type="enum">
+  **Valid values**: `reflective`, `joyful`, `anxious`, `hopeful`, `melancholic`, `grateful`, `frustrated`, `peaceful`, `excited`, `uncertain`, `neutral`
+  
+  The predominant emotional tone of the narrative.
+</ParamField>
+
+<ParamField path="life_domain" type="enum">
+  **Valid values**: `work`, `relationships`, `health`, `identity`, `growth`, `creativity`, `spirituality`, `family`, `adventure`, `learning`, `general`
+  
+  Primary life area the story relates to.
+</ParamField>
+
+<ParamField path="intensity_score" type="float">
+  **Range**: 0.0-1.0
+  
+  How emotionally charged the story is. Higher scores indicate more intense emotions.
+</ParamField>
+
+<ParamField path="significance_score" type="float">
+  **Range**: 0.0-1.0
+  
+  How important this event is to the person's life story. Stories >0.7 are marked as "Key Life Moments".
+</ParamField>
+
+<ParamField path="people_mentioned" type="string[]">
+  Proper names of people mentioned in the story (e.g., ["Sarah", "Dr. Johnson"]).
+</ParamField>
+
+<ParamField path="places_mentioned" type="string[]">
+  Specific locations mentioned (e.g., ["Paris", "Central Park", "mom's house"]).
+</ParamField>
+
+<ParamField path="time_references" type="string[]">
+  Temporal references (e.g., ["last summer", "when I was 12", "yesterday"]).
+</ParamField>
+
+<ParamField path="brief_insight" type="string">
+  A compassionate, one-sentence AI observation about the story's meaning or significance.
+</ParamField>
+
+### Example Analysis Output
+
+```json
+{
+  "themes": ["growth", "perseverance", "career"],
+  "emotional_tone": "hopeful",
+  "life_domain": "work",
+  "intensity_score": 0.65,
+  "significance_score": 0.82,
+  "people_mentioned": ["Maria", "the CEO"],
+  "places_mentioned": ["the conference room"],
+  "time_references": ["last Tuesday"],
+  "brief_insight": "This moment marks a turning point in your professional confidence and self-belief."
+}
+```
+
+## Validation & Sanitization
+
+### Input Validation
+
+<CodeGroup>
+```typescript Content Length
+// Minimum 50 characters
+if (storyText.length < MIN_CONTENT_LENGTH) {
+  return NextResponse.json(
+    { error: `Story text must be at least ${MIN_CONTENT_LENGTH} characters` },
+    { status: 400 }
+  );
+}
+
+// Maximum 10,000 characters (truncated with warning)
+const { text: processedText, wasTruncated } = truncateContent(storyText, storyId);
+```
+
+```typescript Ownership Check
+// Verify caller owns the story
+const { data: storyOwner } = await supabase
+  .from("stories")
+  .select("author_id")
+  .eq("id", storyId)
+  .single();
+
+if (storyOwner && storyOwner.author_id !== authenticatedUserId) {
+  return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+}
+```
+
+```typescript Duplicate Prevention
+// Check for concurrent analysis
+if (isAnalysisInProgress(storyId)) {
+  return NextResponse.json(
+    { error: "Analysis already in progress for this story" },
+    { status: 409 }
+  );
+}
+```
+</CodeGroup>
+
+### Response Sanitization
+
+Gemini responses are sanitized with defaults to ensure valid data:
+
+```typescript
+function sanitizeMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  return {
+    themes: Array.isArray(metadata.themes)
+      ? metadata.themes.slice(0, 5).map((t: unknown) => String(t).toLowerCase())
+      : [],
+    emotional_tone: VALID_EMOTIONAL_TONES.includes(metadata.emotional_tone)
+      ? metadata.emotional_tone
+      : 'neutral',
+    life_domain: VALID_LIFE_DOMAINS.includes(metadata.life_domain)
+      ? metadata.life_domain
+      : 'general',
+    intensity_score: typeof metadata.intensity_score === 'number'
+      ? Math.max(0, Math.min(1, metadata.intensity_score))
+      : 0.5,
+    significance_score: typeof metadata.significance_score === 'number'
+      ? Math.max(0, Math.min(1, metadata.significance_score))
+      : 0.5,
+    // ... entity arrays with empty defaults
+  };
+}
+```
+
+<Warning>
+  Gemini sometimes returns Markdown code blocks (` ```json ... ``` `) instead of raw JSON. The parser strips these automatically.
+</Warning>
+
+## StoryInsights Component
+
+### UI Integration
+
+The `StoryInsights` component displays analysis results on story detail pages:
+
+```tsx
+import { StoryInsights } from "@/components/StoryInsights";
+
+<StoryInsights storyId={story.id} storyText={story.content} />
+```
+
+**Features:**
+- **Automatic fetching** - Polls `/api/stories/{storyId}/metadata` on mount
+- **Loading states** - Spinner during fetch, skeleton while analyzing
+- **Retry on failure** - "Try Again" button for network errors
+- **Manual refresh** - Refresh icon to re-analyze with latest AI model
+
+### Analysis Status States
+
+<AccordionGroup>
+  <Accordion title="pending" icon="hourglass">
+    Analysis is queued but hasn't started yet. Shows "Analysis Queued" with hourglass icon.
+  </Accordion>
+  
+  <Accordion title="processing" icon="loader">
+    Gemini API call in progress. Shows spinning loader with "Analyzing Your Story" message.
+  </Accordion>
+  
+  <Accordion title="completed" icon="check">
+    Analysis finished successfully. Displays full metadata with themes, emotions, scores, and entities.
+  </Accordion>
+  
+  <Accordion title="failed" icon="triangle-alert">
+    Analysis failed after retries. Shows error icon with "Retry Analysis" button.
+  </Accordion>
+</AccordionGroup>
+
+### Insights Display Layout
+
+<CardGroup cols={2}>
+  <Card title="Brief Insight" icon="lightbulb">
+    AI-generated one-sentence observation in an italicized callout box.
+  </Card>
+  
+  <Card title="Tone & Domain Badges" icon="tags">
+    Color-coded badges for emotional tone (purple) and life domain (teal).
+  </Card>
+  
+  <Card title="Themes" icon="sparkles">
+    1-5 theme tags in pill badges with sparkle icon.
+  </Card>
+  
+  <Card title="Intensity & Significance" icon="chart-bar">
+    Dual progress bars showing 0-100% scores.
+  </Card>
+  
+  <Card title="People Mentioned" icon="users">
+    Comma-separated list with user icon.
+  </Card>
+  
+  <Card title="Places Mentioned" icon="map-pin">
+    Comma-separated list with map pin icon.
+  </Card>
+  
+  <Card title="Time References" icon="clock">
+    Comma-separated list with clock icon.
+  </Card>
+  
+  <Card title="Key Life Moment Badge" icon="star">
+    Gold star badge for stories with significance_score > 0.7.
+  </Card>
+</CardGroup>
+
+## Performance & Monitoring
+
+### Rate Limiting
+
+**In-memory rate limiter** (per story ID):
+- **30 requests per minute** per story
+- **Window**: 60 seconds
+- **Response**: `429 Too Many Requests` with `Retry-After` header
+
+```typescript
+const rateCheck = checkRateLimit(storyId);
+if (!rateCheck.allowed) {
+  return NextResponse.json(
+    { error: "Rate limit exceeded. Please try again later." },
+    {
+      status: 429,
+      headers: { "Retry-After": String(rateCheck.retryAfter) },
+    }
+  );
+}
+```
+
+### Performance Monitoring
+
+The API includes built-in performance logging:
+
+```typescript
+const fullAnalysisTimer = new OperationTimer("full_analysis");
+const geminiTimer = new OperationTimer("gemini_call");
+const dbTimer = new OperationTimer("db_upsert");
+
+// ... operations ...
+
+analysisLogger.timed(storyId, "analysis_completed", totalDuration, {
+  themes: (sanitizedMetadata.themes as string[]).length,
+  emotionalTone: sanitizedMetadata.emotional_tone,
+  lifeDomain: sanitizedMetadata.life_domain,
+  retryAttempts: attempt,
+  wasTruncated,
+});
+```
+
+**Logged metrics:**
+- Gemini API call duration
+- Database upsert duration
+- Total analysis duration
+- Retry attempts
+- Content truncation status
+
+## Error Handling
+
+### Client-Side Errors
+
+<ResponseField name="Network Error" type="error">
+  **Cause**: Lost internet connection during fetch
+  
+  **UI**: Red "Connection Error" card with WiFi-off icon
+  
+  **Recovery**: "Try Again" button re-fetches metadata
+</ResponseField>
+
+<ResponseField name="Analysis Failed" type="error">
+  **Cause**: Gemini API error, rate limit, or invalid JSON response
+  
+  **UI**: Amber "Analysis Failed" card with alert triangle icon
+  
+  **Recovery**: "Retry Analysis" button triggers new analysis request
+</ResponseField>
+
+### Server-Side Errors
+
+<ResponseField name="Missing API Key" type="error">
+  **Status**: 500
+  
+  **Message**: "Server configuration error: API Key missing"
+  
+  **Resolution**: Set `GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local`
+</ResponseField>
+
+<ResponseField name="Table Missing" type="error">
+  **Status**: 500
+  
+  **Message**: "Database table 'story_metadata' not found. Please run the migration."
+  
+  **Resolution**: Run `npx supabase db push` to apply migrations
+</ResponseField>
+
+<ResponseField name="Invalid JSON" type="error">
+  **Status**: 500
+  
+  **Message**: "AI returned invalid JSON format"
+  
+  **Resolution**: Automatic retry (up to 3 attempts). If persistent, check Gemini API status.
+</ResponseField>
+
+## Integration Points
+
+<CardGroup cols={2}>
+  <Card title="Voice Journaling" icon="mic" href="/features/voice-journaling">
+    Analysis is automatically triggered after saving transcribed stories
+  </Card>
+  
+  <Card title="Blockchain Storage" icon="globe" href="/features/blockchain-storage">
+    Metadata can be optionally included in NFT metadata on IPFS
+  </Card>
+  
+  <Card title="Social Feed" icon="users" href="/features/social-monetization">
+    Emotional tone and life domain filter the public story feed
+  </Card>
+</CardGroup>
+
+## Implementation Reference
+
+**Source files:**
+- `app/api/ai/analyze/route.ts:272-467` - Main analysis endpoint
+- `components/StoryInsights.tsx:1-496` - UI component
+- `app/utils/analysisLogger.ts` - Performance logging
+- `app/utils/performanceMonitor.ts` - Operation timing
+
+**Database schema:**
+```sql
+CREATE TABLE story_metadata (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  story_id UUID NOT NULL UNIQUE REFERENCES stories(id) ON DELETE CASCADE,
+  themes TEXT[] DEFAULT '{}',
+  emotional_tone TEXT CHECK (emotional_tone IN ('reflective', 'joyful', ...)),
+  life_domain TEXT CHECK (life_domain IN ('work', 'relationships', ...)),
+  intensity_score FLOAT CHECK (intensity_score >= 0 AND intensity_score <= 1),
+  significance_score FLOAT CHECK (significance_score >= 0 AND significance_score <= 1),
+  people_mentioned TEXT[] DEFAULT '{}',
+  places_mentioned TEXT[] DEFAULT '{}',
+  time_references TEXT[] DEFAULT '{}',
+  brief_insight TEXT,
+  analysis_status TEXT DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```

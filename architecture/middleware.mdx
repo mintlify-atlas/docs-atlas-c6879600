@@ -1,0 +1,394 @@
+---
+title: Middleware
+description: Learn about eStory's middleware implementation for rate limiting, CORS, IP detection, and path-based request filtering.
+---
+
+## Overview
+
+eStory uses Next.js middleware to protect API routes from abuse with rate limiting and to enable cross-origin requests from the mobile app.
+
+**File:** `middleware.ts`
+
+---
+
+## Middleware Architecture
+
+```
+Request
+  ↓
+[Middleware] middleware.ts
+  ├─ Is it /api/*?
+  │   ├─ Yes → Continue
+  │   └─ No → Skip
+  ├─ CORS Check (mobile app origin?)
+  ├─ OPTIONS request? → Return 204
+  ├─ Rate Limit Check
+  │   ├─ IP + Path Prefix
+  │   ├─ Path-specific limit
+  │   └─ In-memory store (cleaned every 2 min)
+  └─ Set Headers (rate limit + CORS)
+  ↓
+API Route
+```
+
+---
+
+## Rate Limiting
+
+### Configuration
+
+<Accordion title="Rate Limit Store">
+  ```tsx
+  interface RateLimitEntry {
+    count: number;
+    windowStart: number;
+  }
+
+  const rateLimitStore = new Map<string, RateLimitEntry>();
+  const WINDOW_MS = 60_000; // 1 minute
+  ```
+
+  - **In-memory store** (resets on server restart)
+  - **Sliding window** (1 minute)
+  - **Cleanup** every 2 minutes to prevent memory leaks
+</Accordion>
+
+<Accordion title="Rate Limit Algorithm">
+  ```tsx
+  function checkRateLimit(key: string, maxRequests: number): { allowed: boolean; remaining: number } {
+    cleanupIfNeeded();
+    const now = Date.now();
+    const entry = rateLimitStore.get(key);
+
+    if (!entry || now - entry.windowStart >= WINDOW_MS) {
+      rateLimitStore.set(key, { count: 1, windowStart: now });
+      return { allowed: true, remaining: maxRequests - 1 };
+    }
+
+    if (entry.count >= maxRequests) {
+      return { allowed: false, remaining: 0 };
+    }
+
+    entry.count++;
+    return { allowed: true, remaining: maxRequests - entry.count };
+  }
+  ```
+</Accordion>
+
+---
+
+### Path-Specific Limits
+
+Different API routes have different rate limits based on cost and sensitivity:
+
+<CardGroup cols={2}>
+  <Card title="Strict Limits" icon="shield">
+    - **AI endpoints** (`/api/ai/*`) - 10 req/min
+    - **Email** (`/api/email/send`) - 5 req/min
+    - **Waitlist** (`/api/waitlist`) - 10 req/min
+  </Card>
+
+  <Card title="Moderate Limits" icon="gauge">
+    - **Auth** (`/api/auth/*`) - 20 req/min
+    - **CRE callback** (`/api/cre/callback`) - 30 req/min
+    - **Default API** - 60 req/min
+  </Card>
+</CardGroup>
+
+<Accordion title="Rate Limit Function">
+  ```tsx middleware.ts
+  function getRateLimit(pathname: string): number {
+    // CRE callback: higher limit (multiple DON nodes call per verification)
+    if (pathname === "/api/cre/callback") return 30;
+
+    // AI endpoints: stricter limits (expensive API calls)
+    if (pathname.startsWith("/api/ai/")) return 10;
+
+    // Auth endpoints: prevent brute force
+    if (pathname.startsWith("/api/auth/")) return 20;
+
+    // Public waitlist: prevent abuse (no auth required)
+    if (pathname === "/api/waitlist") return 10;
+
+    // Email endpoint: prevent spam
+    if (pathname === "/api/email/send") return 5;
+
+    // Default for all other API routes
+    if (pathname.startsWith("/api/")) return 60;
+
+    // Non-API routes: no rate limiting
+    return 0;
+  }
+  ```
+</Accordion>
+
+---
+
+### Rate Limit Keys
+
+Rate limits are tracked per `IP + path prefix`:
+
+```tsx
+const ip =
+  request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+  request.headers.get("x-real-ip") ||
+  "unknown";
+
+// Group by path prefix (e.g., /api/ai/* all share the same bucket)
+const pathPrefix = pathname.split("/").slice(0, 4).join("/");
+const rateLimitKey = `${ip}:${pathPrefix}`;
+```
+
+**Example keys:**
+- `192.168.1.1:/api/ai` - All AI routes for this IP
+- `10.0.0.5:/api/stories` - Story routes for this IP
+
+---
+
+### Rate Limit Response
+
+When rate limit is exceeded:
+
+```json
+{
+  "error": "Too many requests. Please try again later."
+}
+```
+
+**Headers:**
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 60
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 0
+```
+
+---
+
+## CORS Configuration
+
+### Allowed Origins
+
+CORS is enabled for the mobile app and development servers:
+
+```tsx
+const ALLOWED_ORIGINS = [
+  "http://localhost:8081",  // Expo web dev server
+  "http://localhost:19006", // Expo web (alternate port)
+  "http://localhost:3000",  // Next.js dev server
+  "https://e-story-dapp.vercel.app",
+  "https://istory.vercel.app",
+];
+```
+
+---
+
+### CORS Headers
+
+<Accordion title="CORS Header Function">
+  ```tsx
+  function getCorsHeaders(origin: string | null): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Max-Age": "86400", // 24 hours
+    };
+
+    if (origin && ALLOWED_ORIGINS.includes(origin)) {
+      headers["Access-Control-Allow-Origin"] = origin;
+    }
+
+    return headers;
+  }
+  ```
+</Accordion>
+
+<Accordion title="OPTIONS Preflight">
+  CORS preflight requests (OPTIONS method) are handled before rate limiting:
+
+  ```tsx
+  if (request.method === "OPTIONS") {
+    return new NextResponse(null, {
+      status: 204,
+      headers: getCorsHeaders(origin),
+    });
+  }
+  ```
+</Accordion>
+
+---
+
+## IP Detection
+
+Middleware extracts the client IP from headers (Vercel/production) or falls back to "unknown":
+
+```tsx
+const ip =
+  request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+  request.headers.get("x-real-ip") ||
+  "unknown";
+```
+
+**Headers checked:**
+1. `x-forwarded-for` - Proxy chain (Vercel uses this)
+2. `x-real-ip` - Nginx/Cloudflare fallback
+3. `"unknown"` - Last resort (local dev)
+
+---
+
+## Middleware Flow
+
+```tsx middleware.ts
+export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Only handle API routes
+  if (!pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+
+  const origin = request.headers.get("origin");
+
+  // Handle CORS preflight (OPTIONS) requests
+  if (request.method === "OPTIONS") {
+    return new NextResponse(null, {
+      status: 204,
+      headers: getCorsHeaders(origin),
+    });
+  }
+
+  const maxRequests = getRateLimit(pathname);
+  if (maxRequests === 0) {
+    const response = NextResponse.next();
+    for (const [key, value] of Object.entries(getCorsHeaders(origin))) {
+      response.headers.set(key, value);
+    }
+    return response;
+  }
+
+  // Extract IP + path prefix
+  const ip =
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip") ||
+    "unknown";
+
+  const pathPrefix = pathname.split("/").slice(0, 4).join("/");
+  const rateLimitKey = `${ip}:${pathPrefix}`;
+
+  const { allowed, remaining } = checkRateLimit(rateLimitKey, maxRequests);
+
+  if (!allowed) {
+    return NextResponse.json(
+      { error: "Too many requests. Please try again later." },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": "60",
+          "X-RateLimit-Limit": String(maxRequests),
+          "X-RateLimit-Remaining": "0",
+          ...getCorsHeaders(origin),
+        },
+      }
+    );
+  }
+
+  // Continue with rate limit + CORS headers
+  const response = NextResponse.next();
+  response.headers.set("X-RateLimit-Limit", String(maxRequests));
+  response.headers.set("X-RateLimit-Remaining", String(remaining));
+  for (const [key, value] of Object.entries(getCorsHeaders(origin))) {
+    response.headers.set(key, value);
+  }
+
+  return response;
+}
+```
+
+---
+
+## Matcher Config
+
+Middleware only runs on API routes:
+
+```tsx
+export const config = {
+  matcher: "/api/:path*",
+};
+```
+
+---
+
+## Auth Middleware (Separate)
+
+Route-level authentication is NOT handled in middleware. Instead, each API route calls `validateAuthOrReject()` from `lib/auth.ts`.
+
+<Accordion title="Why not in middleware?">
+  - **Flexibility** - Some routes need auth, some don't (e.g., `/api/waitlist`)
+  - **Token validation** - Requires async Supabase calls + JWT verification
+  - **Performance** - Middleware runs on every request, auth only when needed
+</Accordion>
+
+See [Auth Service](/architecture/services#auth-service) for details.
+
+---
+
+## Testing Rate Limits
+
+<CodeGroup>
+  ```bash Test AI endpoint (10 req/min)
+  for i in {1..15}; do
+    curl -X POST http://localhost:3000/api/ai/transcribe \
+      -H "Authorization: Bearer $TOKEN" \
+      -F "file=@audio.webm" \
+      -w "\nStatus: %{http_code}\n"
+    sleep 1
+  done
+  # Requests 11-15 should return 429
+  ```
+
+  ```bash Check rate limit headers
+  curl -i http://localhost:3000/api/stories \
+    -H "Authorization: Bearer $TOKEN"
+  # Look for:
+  # X-RateLimit-Limit: 60
+  # X-RateLimit-Remaining: 59
+  ```
+</CodeGroup>
+
+---
+
+## Limitations
+
+<CardGroup cols={2}>
+  <Card title="In-Memory Store" icon="memory">
+    Rate limits reset on server restart. For production at scale, use Redis or Upstash.
+  </Card>
+
+  <Card title="IP Spoofing" icon="user-secret">
+    `x-forwarded-for` can be spoofed. Vercel handles this, but be aware if self-hosting.
+  </Card>
+
+  <Card title="No Token-Based Limits" icon="key">
+    Rate limits are IP-based. Authenticated users with multiple IPs can bypass limits.
+  </Card>
+
+  <Card title="No Burst Protection" icon="fire">
+    Allows full limit instantly. Consider token bucket algorithm for burst protection.
+  </Card>
+</CardGroup>
+
+---
+
+## Related
+
+<CardGroup cols={3}>
+  <Card title="API Routes" icon="route" href="/architecture/api-routes">
+    API endpoints protected by this middleware
+  </Card>
+  <Card title="Services" icon="server" href="/architecture/services">
+    Auth service used by API routes
+  </Card>
+  <Card title="Security" icon="shield" href="/security">
+    Full security architecture overview
+  </Card>
+</CardGroup>

@@ -1,0 +1,541 @@
+---
+title: Library Management
+description: View, organize, and manage your personal story archive with powerful filtering and compilation tools
+---
+
+Your Library is the central hub for all your recorded stories, compiled books, and pattern insights. Browse your memories by month, filter by tags and moods, and compile stories into digital book collections.
+
+## Library Overview
+
+The Library page (`/library`) displays:
+
+- **All your stories** organized by month (newest first)
+- **Compiled books** with story counts
+- **Key Moments** (canonical stories marked as important)
+- **Themes** extracted by AI analysis
+- **Life Areas** (domains) categorized automatically
+
+<Note>
+  Only stories authored by you are visible in your Library. Access requires authentication (wallet or OAuth).
+</Note>
+
+## Navigation Tabs
+
+The Library uses a tabbed interface to organize different views:
+
+```tsx
+// LibraryPageClient.tsx:494-513
+<TabsList className="grid w-full grid-cols-3 sm:grid-cols-6 mb-6">
+  <TabsTrigger value="all">All</TabsTrigger>
+  <TabsTrigger value="stories">Stories</TabsTrigger>
+  <TabsTrigger value="books">Books</TabsTrigger>
+  <TabsTrigger value="key">Key Moments</TabsTrigger>
+  <TabsTrigger value="themes">Themes</TabsTrigger>
+  <TabsTrigger value="domains">Life Areas</TabsTrigger>
+</TabsList>
+```
+
+<CardGroup cols={3}>
+  <Card title="All" icon="file-text">
+    Month-by-month timeline with both stories and books
+  </Card>
+  <Card title="Stories" icon="calendar">
+    Month-by-month view of stories only
+  </Card>
+  <Card title="Books" icon="book-open">
+    Grid view of compiled book collections
+  </Card>
+  <Card title="Key Moments" icon="star">
+    Important stories marked with canonical flag
+  </Card>
+  <Card title="Themes" icon="tags">
+    AI-extracted recurring themes across your stories
+  </Card>
+  <Card title="Life Areas" icon="compass">
+    Stories categorized by life domain (work, relationships, health, etc.)
+  </Card>
+</CardGroup>
+
+## Viewing Stories
+
+### Timeline View (All / Stories Tabs)
+
+Stories are organized by month in a collapsible timeline:
+
+```tsx
+// LibraryPageClient.tsx:117-139
+function groupByMonth(entries: LibraryItem[]): MonthGroup[] {
+  const map = new Map<string, LibraryItem[]>();
+  entries.forEach((entry) => {
+    const date = getEntryDate(entry);
+    const key = getMonthKey(date);
+    const arr = map.get(key) || [];
+    arr.push(entry);
+    map.set(key, arr);
+  });
+
+  return Array.from(map.entries())
+    .sort((a, b) => b[0].localeCompare(a[0])) // newest months first
+    .map(([key, items]) => {
+      const date = getEntryDate(items[0]);
+      return {
+        key,
+        label: getMonthLabel(date),
+        entries: items,
+        storyCount: items.filter((e) => e.type === "entry").length,
+        bookCount: items.filter((e) => e.type === "book").length,
+      };
+    });
+}
+```
+
+**Month Headers:**
+- Display month name and year (e.g., "March 2026")
+- Show story/book counts with badges
+- Timeline dot indicator (blue for current month, gray for past)
+- Click to expand/collapse month section
+
+**Story Cards:**
+Each story card shows:
+- Title and preview (first 2 lines of content)
+- Date (uses `story_date` for backdated stories)
+- Audio indicator (🔊 icon if audio recorded)
+- Visibility badge (🌐 Public / 🔒 Private)
+- Mood badge (if not "neutral")
+- Tags (up to 3 displayed)
+- View and like counts
+
+### Filtering & Search
+
+Use the search bar to filter stories by:
+- Title
+- Content (full-text search)
+- Tags
+
+```tsx
+// LibraryPageClient.tsx:276-288
+const filteredEntries = useMemo(
+  () =>
+    entries.filter((entry) => {
+      if (!searchQuery) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        entry.title.toLowerCase().includes(q) ||
+        (entry.type === "entry" && entry.content.toLowerCase().includes(q)) ||
+        entry.tags?.some((tag) => tag.toLowerCase().includes(q))
+      );
+    }),
+  [entries, searchQuery]
+);
+```
+
+<Note>
+  Search is client-side and case-insensitive. Results update instantly as you type.
+</Note>
+
+## Story Details
+
+Click any story card to view the full story detail page (`/story/[id]`):
+
+- Full content with formatted text
+- Audio playback (if recorded)
+- AI-generated insights (themes, life domain, brief insight)
+- Verified metrics (if CRE analysis completed)
+- Social features (likes, comments, tips)
+- Edit/delete options (author only)
+
+## Organizing by Mood
+
+Stories can have mood metadata (set during recording or added later):
+
+```tsx
+// types/index.ts
+export const moodColors: Record<string, string> = {
+  joyful: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
+  grateful: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  reflective: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  sad: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-300",
+  anxious: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
+  excited: "bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-300",
+  neutral: "",
+};
+```
+
+Mood badges appear on story cards with color-coded styling.
+
+## Organizing by Date
+
+Stories are organized by **story date** (not creation date):
+
+```tsx
+// LibraryPageClient.tsx:104-107
+function getEntryDate(entry: LibraryItem): Date {
+  if (entry.type === "entry") return new Date(entry.story_date);
+  return new Date(entry.created_at);
+}
+```
+
+This means backdated stories appear in the month they represent, not the month they were recorded.
+
+<Note>
+  Story date is set during recording using the "Date of Memory" input. Defaults to today but can be backdated.
+</Note>
+
+## Organizing by Tags
+
+Tags are displayed on story cards and searchable:
+
+- Up to 3 tags shown per card
+- Styled as outline badges with # prefix
+- Click tag to filter stories (future feature)
+
+```tsx
+// LibraryPageClient.tsx:986-993
+{entry.tags && entry.tags.length > 0 && entry.tags[0] !== "compilation" && (
+  <div className="flex flex-wrap gap-1">
+    {entry.tags.slice(0, 3).map((tag) => (
+      <Badge key={tag} variant="outline" className="text-[10px] px-1.5 py-0">
+        #{tag}
+      </Badge>
+    ))}
+  </div>
+)}
+```
+
+## Audio Playback
+
+Stories with recorded audio show a 🔊 icon on the card. Click the story to view details and play the audio.
+
+**Audio Storage:**
+- Audio files are uploaded to Supabase Storage via `/api/audio/upload`
+- Stored in the `story-audio` bucket with path `{userId}/recording.webm`
+- Audio URLs are saved in the `audio_url` column
+- Playback uses HTML5 `<audio>` element in the story detail page
+
+```tsx
+// RecordPageClient.tsx:328-341
+if (audioBlob) {
+  const uploadForm = new FormData();
+  uploadForm.append("file", audioBlob, "recording.webm");
+  uploadForm.append("userId", userId);
+  const uploadHeaders = await getAuthHeaders();
+  const uploadRes = await fetch("/api/audio/upload", {
+    method: "POST",
+    headers: { ...uploadHeaders },
+    body: uploadForm,
+  });
+  if (uploadRes.ok) {
+    const uploadJson = await uploadRes.json();
+    audioUrl = uploadJson.url;
+  }
+}
+```
+
+## Book Compilation
+
+Compile multiple stories into a digital book collection that can be minted as an NFT.
+
+<Steps>
+  <Step title="Start Compilation Mode">
+    Click the "Compile Book" button in the Quick Actions card at the bottom of the Library page.
+
+    ```tsx
+    // LibraryPageClient.tsx:313-318
+    const handleStartCompile = () => {
+      setIsCompiling(true);
+      setActiveTab("all");
+      setSelectedStoryIds(new Set());
+      toast("Select stories to add to your book", { icon: "📚" });
+    };
+    ```
+
+    The interface switches to selection mode:
+    - Story cards show checkboxes
+    - Books are not selectable (grayed out)
+    - Action buttons change to Cancel / Create Book
+  </Step>
+
+  <Step title="Select Stories">
+    Click story cards to select them for the book. Selected cards show:
+    - Blue ring border (`ring-2 ring-[hsl(var(--memory-600))]`)
+    - Blue background tint
+    - Checkmark in the top-right corner
+
+    ```tsx
+    // LibraryPageClient.tsx:306-311
+    const toggleSelection = (id: string) => {
+      const next = new Set(selectedStoryIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      setSelectedStoryIds(next);
+    };
+    ```
+
+    The "Create Book" button shows the count: "Create Book (3)"
+  </Step>
+
+  <Step title="Open Book Dialog">
+    Click "Create Book" (requires at least 2 stories selected). A dialog appears with:
+    - Book title input
+    - Book description textarea
+    - Cancel / Create Collection buttons
+
+    ```tsx
+    // LibraryPageClient.tsx:325-330
+    const handleOpenBookDialog = () => {
+      if (selectedStoryIds.size < 2) return toast.error("Please select at least 2 stories.");
+      setNewBookTitle("");
+      setNewBookDesc("");
+      setIsBookDialogOpen(true);
+    };
+    ```
+  </Step>
+
+  <Step title="Mint NFT">
+    After entering book details, click "Create Collection". This triggers:
+
+    1. **Metadata Upload to IPFS:**
+       ```tsx
+       // LibraryPageClient.tsx:342-356
+       const metadata = {
+         name: newBookTitle,
+         description: newBookDesc,
+         external_url: "https://estory.vercel.app",
+         attributes: [
+           { trait_type: "Author", value: authInfo.name },
+           { trait_type: "Stories", value: selectedStories.length },
+         ],
+         stories: selectedStories.map((s) => ({
+           title: s.title,
+           content: s.content,
+           audio: s.audio_url,
+           date: s.created_at,
+         })),
+       };
+       const ipfsResult = await ipfsService.uploadMetadata(metadata, token);
+       ```
+
+    2. **NFT Minting via Smart Contract:**
+       ```tsx
+       // LibraryPageClient.tsx:364
+       await mintBook(`ipfs://${ipfsResult.hash}`);
+       ```
+
+       This calls `StoryNFT.mintBook(string memory uri)` which:
+       - Requires `mintFee` (0.001 ETH on Base Sepolia)
+       - Mints ERC721 token to `msg.sender`
+       - Emits `NFTMinted` event with collection type "BOOK"
+       - Sets 5% royalty (ERC2981) to author
+
+    3. **Database Save:**
+       ```tsx
+       // LibraryPageClient.tsx:366-377
+       const res = await fetch("/api/books", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+           author_id: authInfo.id,
+           author_wallet: authInfo.wallet_address,
+           title: newBookTitle,
+           description: newBookDesc,
+           story_ids: Array.from(selectedStoryIds),
+           ipfs_hash: ipfsResult.hash,
+         }),
+       });
+       ```
+
+    <Note>
+      Minting requires a connected Web3 wallet with sufficient ETH for gas + mint fee. The transaction must be confirmed before the book appears in the Library.
+    </Note>
+  </Step>
+
+  <Step title="View Book">
+    After successful minting, the book appears in the Books tab. Click to view:
+    - Book metadata and description
+    - List of included stories
+    - IPFS link to full metadata
+    - OpenSea link (if minted on mainnet)
+  </Step>
+</Steps>
+
+## Stats Overview
+
+The top of the Library shows 4 stat cards:
+
+```tsx
+// LibraryPageClient.tsx:445-450
+{ label: "Total Stories", value: entries.filter((e) => e.type === "entry").length, icon: FileText },
+{ label: "Key Moments", value: canonicalStories.length, icon: Star },
+{ label: "Books Created", value: entries.filter((e) => e.type === "book").length, icon: BookOpen },
+{ label: "Months Active", value: monthGroups.length, icon: Calendar },
+```
+
+<CardGroup cols={4}>
+  <Card title="Total Stories" icon="file-text">
+    Count of all recorded stories
+  </Card>
+  <Card title="Key Moments" icon="star">
+    Stories marked as canonical (important)
+  </Card>
+  <Card title="Books Created" icon="book-open">
+    Number of compiled book collections
+  </Card>
+  <Card title="Months Active" icon="calendar">
+    Unique months with at least one story
+  </Card>
+</CardGroup>
+
+## Key Moments (Canonical Stories)
+
+Key Moments are stories marked as particularly significant. They appear in a dedicated tab and have special styling:
+
+```tsx
+// LibraryPageClient.tsx:1037-1040
+<Card
+  className="h-full card-canonical transition-all duration-300 cursor-pointer hover-glow-canonical bg-[hsl(var(--story-500)/0.05)] rounded-xl"
+  onClick={onClick}
+>
+```
+
+Key Moment cards show:
+- Gold star icon (filled)
+- "Key Moment" badge with story theme colors
+- Life domain badge (if extracted)
+- AI-generated brief insight
+- Top 3 themes as badges
+
+<Note>
+  Stories are marked as canonical automatically by AI analysis or manually by the user. The `is_canonical` flag is stored in the database.
+</Note>
+
+## Patterns (Themes & Life Areas)
+
+The Library integrates with the `usePatterns` hook to extract and display patterns across your stories.
+
+### Themes Tab
+
+Themes are recurring topics extracted by AI analysis:
+
+```tsx
+// LibraryPageClient.tsx:660-662
+<TabsContent value="themes">
+  <ThemesView themeGroups={themeGroups} isLoading={patternsLoading} />
+</TabsContent>
+```
+
+Shows:
+- All unique themes across stories
+- Number of stories per theme
+- Click to view stories with that theme
+
+### Life Areas Tab
+
+Life domains categorize stories by area:
+
+```tsx
+// LibraryPageClient.tsx:665-667
+<TabsContent value="domains">
+  <DomainsView domainGroups={domainGroups} isLoading={patternsLoading} totalStories={patternStories.length} />
+</TabsContent>
+```
+
+Common domains:
+- Work & Career
+- Relationships
+- Health & Wellness
+- Personal Growth
+- Finance
+- Hobbies & Leisure
+
+## Data Fetching
+
+The Library fetches data from two sources:
+
+1. **Stories:**
+   ```tsx
+   // LibraryPageClient.tsx:194-210
+   const storiesRes = await fetch("/api/stories", {
+     headers: { Authorization: `Bearer ${token}` },
+   });
+   ```
+
+   Falls back to direct Supabase query if API route fails:
+   ```tsx
+   const { data: directData } = await supabase
+     .from("stories")
+     .select("*")
+     .eq("author_id", authInfo.id)
+     .order("created_at", { ascending: false });
+   ```
+
+2. **Books:**
+   ```tsx
+   // LibraryPageClient.tsx:222-226
+   const { data: booksData } = await supabase
+     .from("books")
+     .select("*")
+     .eq("author_id", authInfo.id)
+     .order("created_at", { ascending: false });
+   ```
+
+<Note>
+  Data is fetched on mount and after book creation. Use the browser's network tab to debug fetch failures.
+</Note>
+
+## Performance Optimizations
+
+### Memoized Filtering
+
+```tsx
+// LibraryPageClient.tsx:276-288
+const filteredEntries = useMemo(
+  () => entries.filter((entry) => {
+    // ... filtering logic
+  }),
+  [entries, searchQuery]
+);
+```
+
+### Lazy Month Grouping
+
+```tsx
+// LibraryPageClient.tsx:290-294
+const monthGroups = useMemo(() => groupByMonth(filteredEntries), [filteredEntries]);
+const storyMonthGroups = useMemo(
+  () => groupByMonth(filteredEntries.filter((e) => e.type === "entry")),
+  [filteredEntries]
+);
+```
+
+### Collapsible Months
+
+```tsx
+// LibraryPageClient.tsx:296-303
+const toggleMonth = (key: string) => {
+  setCollapsedMonths((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
+};
+```
+
+Months can be collapsed to reduce DOM nodes and improve scrolling performance.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Recording Stories" icon="microphone" href="/guides/recording-stories">
+    Learn how to record and transcribe your stories
+  </Card>
+  <Card title="NFT Minting" icon="image" href="/guides/nft-minting">
+    Deep dive into book NFT minting
+  </Card>
+  <Card title="Vault Setup" icon="shield" href="/guides/vault-setup">
+    Set up local encrypted storage
+  </Card>
+  <Card title="Earning Tokens" icon="coins" href="/guides/earning-tokens">
+    Monetize your stories with $STORY tokens
+  </Card>
+</CardGroup>

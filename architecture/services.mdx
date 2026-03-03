@@ -1,0 +1,652 @@
+---
+title: Backend Services
+description: Learn about eStory's backend service architecture, including Supabase clients, IPFS service, email service, and Web3 clients.
+---
+
+## Overview
+
+eStory's backend services provide abstraction layers for external APIs and blockchain interactions. Services are organized by function and follow singleton patterns for efficiency.
+
+---
+
+## Supabase Clients
+
+### Three Client Types
+
+eStory uses three distinct Supabase clients for different contexts:
+
+<CardGroup cols={3}>
+  <Card title="Browser Client" icon="browser">
+    **File:** `app/utils/supabase/supabaseClient.ts`
+    
+    Singleton for client components. Handles auth sessions, local storage.
+  </Card>
+
+  <Card title="Server Client" icon="server">
+    **File:** `app/utils/supabase/supabaseServer.ts`
+    
+    For server components and API routes. Uses cookies for auth.
+  </Card>
+
+  <Card title="Admin Client" icon="key">
+    **File:** `app/utils/supabase/supabaseAdmin.ts`
+    
+    Service role client that bypasses RLS. Admin operations only.
+  </Card>
+</CardGroup>
+
+---
+
+### Browser Client
+
+**File:** `app/utils/supabase/supabaseClient.ts`
+
+Singleton Supabase client for client-side components.
+
+<Accordion title="Implementation">
+  ```tsx
+  import { createClient } from "@supabase/supabase-js";
+
+  const createSupabaseClient = () => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    return createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        auth: {
+          autoRefreshToken: true,
+          persistSession: true,
+          detectSessionInUrl: true,
+          storage: window.localStorage,
+        },
+      }
+    );
+  };
+
+  export const supabaseClient =
+    typeof window !== "undefined" ? createSupabaseClient() : null;
+  ```
+</Accordion>
+
+<Accordion title="Usage">
+  ```tsx
+  import { useBrowserSupabase } from "@/app/hooks/useBrowserSupabase";
+
+  function MyComponent() {
+    const supabase = useBrowserSupabase();
+
+    useEffect(() => {
+      if (!supabase) return;
+
+      const fetchData = async () => {
+        const { data } = await supabase
+          .from("stories")
+          .select("*")
+          .eq("author_id", userId);
+        console.log(data);
+      };
+
+      fetchData();
+    }, [supabase]);
+  }
+  ```
+</Accordion>
+
+**Important:** Never create new Supabase clients in components. Always use the singleton via `useBrowserSupabase()`.
+
+---
+
+### Server Client
+
+**File:** `app/utils/supabase/supabaseServer.ts`
+
+Creates a Supabase client for server components and API routes (uses cookies).
+
+<Accordion title="Implementation">
+  ```tsx
+  import { createServerClient } from "@supabase/ssr";
+  import { cookies } from "next/headers";
+
+  export function createSupabaseServerClient() {
+    const cookieStore = cookies();
+
+    return createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value;
+          },
+        },
+      }
+    );
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage (Server Components)">
+  ```tsx
+  import { createSupabaseServerClient } from "@/app/utils/supabase/supabaseServer";
+
+  export default async function ServerPage() {
+    const supabase = createSupabaseServerClient();
+    const { data } = await supabase.from("stories").select("*");
+
+    return <div>{/* render data */}</div>;
+  }
+  ```
+</Accordion>
+
+---
+
+### Admin Client
+
+**File:** `app/utils/supabase/supabaseAdmin.ts`
+
+Service role client that bypasses Row Level Security (RLS) policies.
+
+<Accordion title="Implementation">
+  ```tsx
+  import { createClient } from "@supabase/supabase-js";
+
+  export function createSupabaseAdminClient() {
+    return createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      }
+    );
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage (API Routes Only)">
+  ```tsx
+  import { createSupabaseAdminClient } from "@/app/utils/supabase/supabaseAdmin";
+
+  export async function POST(req: NextRequest) {
+    const admin = createSupabaseAdminClient();
+
+    // Bypass RLS to fetch any user's data
+    const { data } = await admin
+      .from("users")
+      .select("*")
+      .eq("id", userId)
+      .single();
+
+    return NextResponse.json({ user: data });
+  }
+  ```
+</Accordion>
+
+**Warning:** Only use admin client in API routes. Never expose service role key to the client.
+
+---
+
+## Auth Service
+
+**File:** `lib/auth.ts`
+
+Provides authentication validation for API routes.
+
+<Accordion title="Functions">
+  ```tsx
+  // Validate Bearer token (Supabase or wallet JWT)
+  export async function validateAuth(
+    request: NextRequest
+  ): Promise<string | null>;
+
+  // Validate token or return 401 response
+  export async function validateAuthOrReject(
+    request: NextRequest
+  ): Promise<string | NextResponse>;
+
+  // Verify user owns a wallet address
+  export async function validateWalletOwnership(
+    userId: string,
+    walletAddress: string
+  ): Promise<boolean>;
+
+  // Resolve JWT user ID → users table ID
+  export async function resolveUserId(
+    authenticatedUserId: string
+  ): Promise<string>;
+
+  // Check if result is an error response
+  export function isAuthError(
+    result: string | NextResponse
+  ): result is NextResponse;
+  ```
+</Accordion>
+
+<Accordion title="Usage Example">
+  ```tsx
+  import { validateAuthOrReject, isAuthError } from "@/lib/auth";
+
+  export async function POST(req: NextRequest) {
+    const authResult = await validateAuthOrReject(req);
+    if (isAuthError(authResult)) return authResult;
+
+    const userId = authResult; // Authenticated user ID
+
+    // ... proceed with operation
+  }
+  ```
+</Accordion>
+
+See [API Routes](/architecture/api-routes#authentication) for more details.
+
+---
+
+## IPFS Service
+
+**File:** `app/utils/ipfsService.ts`
+
+Handles IPFS uploads via Pinata API.
+
+<Accordion title="Class Interface">
+  ```tsx
+  export class IPFSService {
+    static getInstance(): IPFSService;
+
+    // Upload JSON metadata to IPFS
+    async uploadMetadata(
+      data: any,
+      accessToken?: string | null
+    ): Promise<IPFSUploadResult>;
+
+    // Upload file (audio, image) to IPFS
+    async uploadFile(
+      file: Blob,
+      accessToken?: string | null
+    ): Promise<IPFSUploadResult>;
+
+    // Get gateway URL for a hash
+    getGatewayUrl(hash: string): string;
+  }
+
+  export interface IPFSUploadResult {
+    hash: string;  // IPFS hash (Qm...)
+    url: string;   // Gateway URL
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage Example">
+  ```tsx
+  import { ipfsService } from "@/app/utils/ipfsService";
+  import { useAuth } from "@/components/AuthProvider";
+
+  function UploadButton({ audioBlob }) {
+    const { getAccessToken } = useAuth();
+
+    const handleUpload = async () => {
+      const token = await getAccessToken();
+
+      // Upload audio file
+      const { hash, url } = await ipfsService.uploadFile(audioBlob, token);
+      console.log("Uploaded to:", url);
+
+      // Upload metadata
+      const metadata = {
+        title: "My Story",
+        audio: `ipfs://${hash}`,
+      };
+      const metadataResult = await ipfsService.uploadMetadata(metadata, token);
+      console.log("Metadata at:", metadataResult.url);
+    };
+
+    return <button onClick={handleUpload}>Upload to IPFS</button>;
+  }
+  ```
+</Accordion>
+
+---
+
+## Email Service
+
+**File:** `app/utils/emailService.ts`
+
+Sends transactional emails via Resend API.
+
+<Accordion title="Interface">
+  ```tsx
+  export const emailService = {
+    sendWelcomeEmail: async (
+      email: string,
+      username: string,
+      accessToken?: string | null
+    ) => Promise<any>;
+  };
+  ```
+</Accordion>
+
+<Accordion title="Usage">
+  ```tsx
+  import { emailService } from "@/app/utils/emailService";
+  import { useAuth } from "@/components/AuthProvider";
+
+  function OnboardingFlow() {
+    const { getAccessToken } = useAuth();
+
+    const completeOnboarding = async () => {
+      const token = await getAccessToken();
+
+      // Send welcome email after signup
+      await emailService.sendWelcomeEmail(
+        "user@example.com",
+        "alice",
+        token
+      );
+    };
+  }
+  ```
+</Accordion>
+
+**Backend Route:** `app/api/email/send/route.ts`
+
+---
+
+## Web3 Clients
+
+### Wagmi Config
+
+**File:** `lib/wagmi.config.ts`
+
+Configures Wagmi for wallet connections and contract interactions.
+
+<Accordion title="Configuration">
+  ```tsx
+  import { getDefaultConfig } from "@rainbow-me/rainbowkit";
+  import { baseSepolia, sepolia } from "wagmi/chains";
+
+  export const config = getDefaultConfig({
+    appName: "eStory DApp",
+    projectId: process.env.NEXT_PUBLIC_PROJECT_ID || "",
+    chains: [baseSepolia, sepolia],
+    ssr: true, // Enable SSR support for Next.js
+  });
+  ```
+</Accordion>
+
+**Used in:** `components/Provider.tsx` (`WagmiProvider`)
+
+---
+
+### Viem Client
+
+**File:** `lib/viemClient.ts`
+
+Public client for reading blockchain state in API routes.
+
+<Accordion title="Implementation">
+  ```tsx
+  import { createPublicClient, http } from "viem";
+  import { baseSepolia } from "viem/chains";
+
+  export const publicClient = createPublicClient({
+    chain: baseSepolia,
+    transport: http(), // Uses default public RPC
+  });
+  ```
+</Accordion>
+
+<Accordion title="Usage (Server-Side)">
+  ```tsx
+  import { publicClient } from "@/lib/viemClient";
+
+  export async function GET(req: NextRequest) {
+    // Read contract state on server
+    const balance = await publicClient.readContract({
+      address: "0x...",
+      abi: ERC20_ABI,
+      functionName: "balanceOf",
+      args: [userAddress],
+    });
+
+    return NextResponse.json({ balance: balance.toString() });
+  }
+  ```
+</Accordion>
+
+---
+
+### Contract Addresses & ABIs
+
+**File:** `lib/contracts.ts`
+
+Centralized contract addresses and ABI imports.
+
+<Accordion title="Exports">
+  ```tsx
+  // Contract addresses
+  export const STORY_TOKEN_ADDRESS = "0xf9eDD76B...";
+  export const STORY_PROTOCOL_ADDRESS = "0xA51a4cA0...";
+  export const STORY_NFT_ADDRESS = "0x6D37ebc5...";
+  export const VERIFIED_METRICS_ADDRESS = "0x158e08BC...";
+
+  // ABIs
+  export const STORY_TOKEN_ABI = [...];
+  export const STORY_PROTOCOL_ABI = [...];
+  export const STORY_NFT_ABI = [...];
+  export const VERIFIED_METRICS_ABI = [...];
+  ```
+</Accordion>
+
+**Used by:** All Web3 hooks (`useIStoryToken`, `useStoryProtocol`, `useStoryNFT`)
+
+---
+
+## Vault Services
+
+### Crypto Service
+
+**File:** `lib/vault/crypto.ts`
+
+Low-level encryption primitives using Web Crypto API.
+
+<Accordion title="Functions">
+  ```tsx
+  // Generate random encryption key (DEK)
+  export async function generateDEK(): Promise<CryptoKey>;
+
+  // Derive KEK from PIN using PBKDF2
+  export async function deriveKEKFromPin(
+    pin: string,
+    salt: Uint8Array
+  ): Promise<CryptoKey>;
+
+  // Wrap DEK with KEK (AES-KW)
+  export async function wrapDEK(
+    dek: CryptoKey,
+    kek: CryptoKey
+  ): Promise<ArrayBuffer>;
+
+  // Unwrap DEK with KEK
+  export async function unwrapDEK(
+    wrappedKey: ArrayBuffer,
+    kek: CryptoKey
+  ): Promise<CryptoKey>;
+
+  // Encrypt data with DEK (AES-GCM)
+  export async function encryptData(
+    data: ArrayBuffer,
+    dek: CryptoKey
+  ): Promise<{ ciphertext: ArrayBuffer; iv: Uint8Array }>;
+
+  // Decrypt data with DEK
+  export async function decryptData(
+    ciphertext: ArrayBuffer,
+    iv: Uint8Array,
+    dek: CryptoKey
+  ): Promise<ArrayBuffer>;
+
+  // Helper: encrypt string
+  export async function encryptString(
+    plaintext: string,
+    dek: CryptoKey
+  ): Promise<{ ciphertext: string; iv: string }>;
+
+  // Helper: decrypt string
+  export async function decryptString(
+    ciphertext: string,
+    iv: string,
+    dek: CryptoKey
+  ): Promise<string>;
+  ```
+</Accordion>
+
+---
+
+### Database Service
+
+**File:** `lib/vault/db.ts`
+
+Dexie.js database for encrypted local storage.
+
+<Accordion title="Schema">
+  ```tsx
+  export interface LocalStoryRecord {
+    localId: string;              // Primary key (UUID)
+    userId: string;               // Foreign key to users table
+    encrypted_title: string;      // AES-GCM ciphertext (base64)
+    title_iv: string;             // IV for title (base64)
+    encrypted_content: string;    // AES-GCM ciphertext (base64)
+    content_iv: string;           // IV for content (base64)
+    encrypted_audio?: string;     // AES-GCM ciphertext (base64)
+    audio_iv?: string;            // IV for audio (base64)
+    encrypted_metadata?: string;  // JSON metadata (encrypted)
+    metadata_iv?: string;         // IV for metadata (base64)
+    checksum: string;             // SHA-256 of plaintext (integrity)
+    cloud_id?: string;            // Linked Supabase story ID
+    sync_status: SyncStatus;      // "local" | "synced" | "pending" | "failed"
+    is_public: boolean;
+    story_date: string;
+    created_at: string;
+    updated_at: string;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Functions">
+  ```tsx
+  // Get Dexie database instance
+  export function getVaultDb(): VaultDB;
+
+  // Initialize database for user
+  export async function initVaultDb(userId: string): Promise<void>;
+  ```
+</Accordion>
+
+---
+
+### Key Manager
+
+**File:** `lib/vault/keyManager.ts`
+
+Manages in-memory DEKs (Data Encryption Keys) while vault is unlocked.
+
+<Accordion title="Functions">
+  ```tsx
+  // Store DEK in memory
+  export function storeDEK(userId: string, dek: CryptoKey): void;
+
+  // Retrieve DEK from memory
+  export function getDEK(userId: string): CryptoKey;
+
+  // Remove DEK from memory (lock vault)
+  export function clearDEK(userId: string): void;
+
+  // Clear all DEKs (sign out)
+  export function clearAllKeys(): void;
+  ```
+</Accordion>
+
+**Security:** DEKs are never persisted to disk. They exist only in memory while vault is unlocked.
+
+---
+
+### Vault Index
+
+**File:** `lib/vault/index.ts`
+
+High-level vault operations (setup, unlock, lock).
+
+<Accordion title="Functions">
+  ```tsx
+  // Set up vault with PIN
+  export async function setupVault(
+    userId: string,
+    pin: string
+  ): Promise<void>;
+
+  // Unlock vault with PIN
+  export async function unlockVault(
+    userId: string,
+    pin: string
+  ): Promise<boolean>;
+
+  // Lock vault (clear DEK from memory)
+  export function lockVault(userId: string): void;
+
+  // Change vault PIN
+  export async function changePin(
+    userId: string,
+    oldPin: string,
+    newPin: string
+  ): Promise<void>;
+
+  // Check if vault is set up
+  export async function isVaultSetup(userId: string): Promise<boolean>;
+
+  // Check if vault is unlocked
+  export function isVaultUnlocked(userId: string): boolean;
+  ```
+</Accordion>
+
+See [Vault Encryption](/architecture/vault/encryption) for more details.
+
+---
+
+## Service Patterns
+
+<CardGroup cols={2}>
+  <Card title="Singleton Pattern" icon="code">
+    Services use singleton instances to avoid duplicate connections (IPFS, Email, Supabase browser client).
+  </Card>
+
+  <Card title="Factory Pattern" icon="wrench">
+    Clients created on-demand (Supabase server, admin). Avoids build-time env var issues.
+  </Card>
+
+  <Card title="Lazy Initialization" icon="clock">
+    External clients initialized only when needed (ElevenLabs, Gemini in API routes).
+  </Card>
+
+  <Card title="Token Passing" icon="key">
+    Services accept optional `accessToken` parameter. Caller obtains token from `AuthProvider.getAccessToken()`.
+  </Card>
+</CardGroup>
+
+---
+
+## Related
+
+<CardGroup cols={3}>
+  <Card title="API Routes" icon="route" href="/architecture/api-routes">
+    API routes that use these services
+  </Card>
+  <Card title="Hooks" icon="link" href="/architecture/hooks">
+    Frontend hooks that call these services
+  </Card>
+  <Card title="Middleware" icon="filter" href="/architecture/middleware">
+    Auth middleware and rate limiting
+  </Card>
+</CardGroup>

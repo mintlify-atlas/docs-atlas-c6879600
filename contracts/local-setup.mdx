@@ -1,0 +1,293 @@
+---
+title: Local Contract Development
+description: Set up Hardhat, compile contracts, and run a local development node
+---
+
+# Local Contract Development
+
+This guide covers setting up Hardhat for local smart contract development, compiling Solidity contracts, and running a local test node.
+
+<Note>
+  **Prerequisites**: Node.js 18+, npm/yarn/pnpm installed. Familiarity with Solidity and Ethereum development recommended.
+</Note>
+
+## Project Structure
+
+The eStory smart contract codebase is organized as follows:
+
+```
+i_story_dapp/
+├── contracts/                      # Solidity contracts
+│   ├── iStoryToken.sol            # ERC20 $STORY token (100M max supply)
+│   ├── StoryProtocol.sol          # Tips & paywall logic
+│   ├── StoryNFT.sol               # ERC721 story books (0.001 ETH mint fee)
+│   ├── PrivateVerifiedMetrics.sol # Privacy-preserving CRE metrics
+│   ├── VerifiedMetrics.sol        # CRE metrics with Chainlink KeystoneForwarder
+│   ├── interfaces/                # Contract interfaces (IReceiver, IERC165)
+│   └── legacy/                    # Backward compatibility contracts
+├── scripts/                        # Hardhat deployment & utility scripts
+│   ├── deploy.ts                  # Deploy all contracts to Base Sepolia
+│   ├── verify.ts                  # Basescan verification script
+│   └── verify-deployment.ts       # ABI verification script
+├── hardhat.config.ts              # Hardhat configuration
+└── .env.local                     # Environment variables (private keys, API keys)
+```
+
+## Installation
+
+<Steps>
+  <Step title="Install Hardhat and Dependencies">
+    The eStory project includes Hardhat in its dependencies. Install everything:
+
+    ```bash
+    npm install
+    ```
+
+    This installs:
+    - `hardhat` (v2.27.1+) - Ethereum development environment
+    - `@nomicfoundation/hardhat-toolbox` - All-in-one Hardhat plugins
+    - `@openzeppelin/contracts` (v5.4.0) - Secure contract libraries
+    - `dotenv` - Environment variable management
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    Create `.env.local` in the project root with your private key:
+
+    ```bash
+    # Admin wallet private key (for deployments)
+    ADMIN_WALLET_PRIVATE_KEY=your_private_key_here
+
+    # Basescan API key (for contract verification)
+    BASESCAN_API_KEY=your_basescan_api_key
+
+    # Admin wallet address
+    NEXT_PUBLIC_INITIAL_ADMIN_ADDRESS=0xYourWalletAddress
+    ```
+
+    <Warning>
+      **Never commit `.env.local` to version control.** It contains your private key. Add it to `.gitignore`.
+    </Warning>
+  </Step>
+
+  <Step title="Verify Hardhat Configuration">
+    The eStory Hardhat config (`hardhat.config.ts`) is pre-configured:
+
+    ```typescript
+    import { HardhatUserConfig } from "hardhat/config";
+    import "@nomicfoundation/hardhat-toolbox";
+    import * as dotenv from "dotenv";
+
+    dotenv.config({ path: ".env.local" });
+
+    const config: HardhatUserConfig = {
+      solidity: {
+        version: "0.8.20",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200,  // Optimized for deployment cost
+          },
+        },
+      },
+      defaultNetwork: "baseSepolia",
+      networks: {
+        hardhat: {},  // Local Hardhat node
+        baseSepolia: {
+          url: "https://sepolia.base.org",
+          accounts: process.env.ADMIN_WALLET_PRIVATE_KEY
+            ? [process.env.ADMIN_WALLET_PRIVATE_KEY]
+            : [],
+          chainId: 84532,
+        },
+      },
+      etherscan: {
+        apiKey: {
+          baseSepolia: process.env.BASESCAN_API_KEY || "",
+        },
+        customChains: [
+          {
+            network: "baseSepolia",
+            chainId: 84532,
+            urls: {
+              // V2 API endpoint (fixes "Deprecated V1" error)
+              apiURL: "https://api.etherscan.io/v2/api?chainid=84532",
+              browserURL: "https://sepolia.basescan.org",
+            },
+          },
+        ],
+      },
+      sourcify: {
+        enabled: true  // Alternative open-source verification
+      }
+    };
+
+    export default config;
+    ```
+
+    **Key configuration details:**
+    - **Solidity 0.8.20**: Used for all contracts (matches Base Sepolia compatibility)
+    - **Optimizer enabled**: Reduces deployment gas costs (200 runs)
+    - **Default network**: `baseSepolia` (change to `hardhat` for local testing)
+    - **Etherscan V2 API**: Critical for Basescan verification to work
+  </Step>
+</Steps>
+
+## Compilation
+
+<Steps>
+  <Step title="Compile All Contracts">
+    Compile Solidity contracts to generate ABIs and bytecode:
+
+    ```bash
+    npx hardhat compile
+    ```
+
+    **Output:**
+    ```
+    Compiled 15 Solidity files successfully (evm target: paris).
+    ```
+
+    Artifacts are saved to:
+    - `artifacts/contracts/` - ABIs, bytecode, metadata
+    - `cache/` - Compilation cache (speeds up rebuilds)
+  </Step>
+
+  <Step title="Force Recompilation (if needed)">
+    If you modify contracts and compilation doesn't detect changes:
+
+    ```bash
+    npx hardhat clean
+    npx hardhat compile
+    ```
+
+    This deletes the `artifacts/` and `cache/` directories before recompiling.
+  </Step>
+
+  <Step title="Check for Compilation Errors">
+    Common errors and fixes:
+
+    | Error | Solution |
+    |-------|----------|
+    | `SPDX license identifier not provided` | Add `// SPDX-License-Identifier: MIT` at top of file |
+    | `ParserError: Source not found` | Check import paths (use `@openzeppelin/contracts/...`) |
+    | `Stack too deep` | Reduce local variables or restructure function |
+    | `Contract code size exceeds 24576 bytes` | Enable optimizer or split contract |
+  </Step>
+</Steps>
+
+## Local Hardhat Node
+
+<Steps>
+  <Step title="Start Local Node">
+    Run a local Ethereum node for testing (simulates blockchain behavior):
+
+    ```bash
+    npx hardhat node
+    ```
+
+    **Output:**
+    ```
+    Started HTTP and WebSocket JSON-RPC server at http://127.0.0.1:8545/
+
+    Accounts
+    ========
+    Account #0: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 (10000 ETH)
+    Private Key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+    ...
+    ```
+
+    **Features:**
+    - **20 test accounts** pre-funded with 10,000 ETH each
+    - **Instant mining** (no block time delay)
+    - **Chain ID**: 31337 (Hardhat network)
+    - **RPC endpoint**: `http://127.0.0.1:8545`
+  </Step>
+
+  <Step title="Connect MetaMask to Local Node">
+    Add Hardhat network to MetaMask:
+
+    1. Open MetaMask → Settings → Networks → Add Network
+    2. Enter details:
+       - **Network Name**: Hardhat Local
+       - **RPC URL**: `http://127.0.0.1:8545`
+       - **Chain ID**: `31337`
+       - **Currency Symbol**: `ETH`
+    3. Import test account using private key from `npx hardhat node` output
+  </Step>
+
+  <Step title="Deploy Contracts to Local Node">
+    In a separate terminal (while `npx hardhat node` is running):
+
+    ```bash
+    npx hardhat run scripts/deploy.ts --network hardhat
+    ```
+
+    **Behind the scenes (`scripts/deploy.ts`):**
+    1. Deploys `EStoryToken` (ERC20 $STORY token)
+    2. Deploys `StoryProtocol` (with token address)
+    3. Deploys `StoryNFT` (ERC721 story books)
+    4. Mints initial 1M $STORY tokens to admin wallet
+    5. Saves contract addresses to console
+
+    <Note>
+      Contract addresses change on each restart of the local node. Update `.env.local` with new addresses after deployment.
+    </Note>
+  </Step>
+</Steps>
+
+## Testing Setup
+
+Hardhat includes testing frameworks out of the box:
+
+### Unit Tests (Recommended)
+
+Create test files in `test/` directory:
+
+```typescript
+import { expect } from "chai";
+import { ethers } from "hardhat";
+
+describe("EStoryToken", function () {
+  it("Should deploy with correct max supply", async function () {
+    const [owner] = await ethers.getSigners();
+    const Token = await ethers.getContractFactory("EStoryToken");
+    const token = await Token.deploy(owner.address);
+
+    const maxSupply = await token.MAX_SUPPLY();
+    expect(maxSupply).to.equal(ethers.parseEther("100000000")); // 100M
+  });
+});
+```
+
+Run tests:
+
+```bash
+npx hardhat test
+```
+
+<Note>
+  eStory uses **Vitest** for application tests (see `__tests__/` directory). Hardhat tests are separate and use Mocha/Chai.
+</Note>
+
+## Common Development Commands
+
+| Command | Description |
+|---------|-------------|
+| `npx hardhat compile` | Compile contracts to generate ABIs |
+| `npx hardhat clean` | Delete artifacts and cache |
+| `npx hardhat node` | Start local Hardhat node on port 8545 |
+| `npx hardhat run scripts/deploy.ts --network hardhat` | Deploy to local node |
+| `npx hardhat run scripts/deploy.ts --network baseSepolia` | Deploy to Base Sepolia testnet |
+| `npx hardhat test` | Run contract tests |
+| `npx hardhat console --network hardhat` | Interactive JavaScript console |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Contract Testing" icon="flask" href="/contracts/testing">
+    Write and run Hardhat tests for your contracts
+  </Card>
+  <Card title="Contract Verification" icon="check-circle" href="/contracts/verification">
+    Verify contracts on Basescan and Sourcify
+  </Card>
+</CardGroup>

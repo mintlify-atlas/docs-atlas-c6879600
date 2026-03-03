@@ -1,0 +1,392 @@
+---
+title: Contract Verification
+description: Verify deployed contracts on Basescan and Sourcify
+---
+
+# Contract Verification
+
+This guide covers verifying eStory smart contracts on Basescan (Base Sepolia block explorer) and Sourcify (decentralized verification).
+
+<Note>
+  **Prerequisites**: Contracts deployed to Base Sepolia. See [Local Contract Development](/contracts/local-setup) for deployment.
+</Note>
+
+## Why Verify Contracts?
+
+**Contract verification** publishes your Solidity source code to block explorers, allowing users to:
+
+- **Read the source code** directly on Basescan
+- **Verify contract behavior** matches claimed functionality
+- **Interact with contracts** via block explorer UI (read/write functions)
+- **Build trust** - Unverified contracts are often considered suspicious
+
+## Verification Methods
+
+eStory supports three verification methods:
+
+| Method | Explorer | Decentralized | Configuration |
+|--------|----------|---------------|---------------|
+| **Basescan API** | [sepolia.basescan.org](https://sepolia.basescan.org) | No | `hardhat.config.ts` etherscan config |
+| **ABI Verification** | Custom script | No | `scripts/verify-deployment.ts` |
+| **Sourcify** | [sourcify.dev](https://sourcify.dev) | Yes (IPFS) | `hardhat.config.ts` sourcify config |
+
+## Method 1: Basescan Verification
+
+### Prerequisites
+
+1. **Basescan API Key**: Get from [basescan.org/myapikey](https://basescan.org/myapikey)
+2. **Deployed contracts**: Have contract addresses from deployment
+3. **Environment variables**: Set in `.env.local`
+
+```bash
+BASESCAN_API_KEY=your_api_key_here
+NEXT_PUBLIC_ESTORY_TOKEN_ADDRESS=0x...
+NEXT_PUBLIC_STORY_PROTOCOL_ADDRESS=0x...
+NEXT_PUBLIC_STORY_NFT_ADDRESS=0x...
+NEXT_PUBLIC_INITIAL_ADMIN_ADDRESS=0x...
+```
+
+### Verify Using Hardhat Command
+
+<Steps>
+  <Step title="Verify Single Contract">
+    Use `npx hardhat verify` with contract address and constructor arguments:
+
+    ```bash
+    npx hardhat verify --network baseSepolia <CONTRACT_ADDRESS> <CONSTRUCTOR_ARG1> <CONSTRUCTOR_ARG2>
+    ```
+
+    **Example: Verify EStoryToken**
+    ```bash
+    npx hardhat verify \
+      --network baseSepolia \
+      0xf9eDD76B... \
+      0xYourAdminAddress
+    ```
+
+    Constructor args: `[adminAddress]`
+  </Step>
+
+  <Step title="Verify Multiple Contracts">
+    Use the provided verification script (`scripts/verify.ts`):
+
+    ```bash
+    npx hardhat run scripts/verify.ts --network baseSepolia
+    ```
+
+    **Script behavior:**
+    ```typescript
+    // scripts/verify.ts (simplified)
+    import { run } from "hardhat";
+    import * as dotenv from "dotenv";
+
+    dotenv.config({ path: ".env.local" });
+
+    async function main() {
+      const ADMIN_WALLET = process.env.NEXT_PUBLIC_INITIAL_ADMIN_ADDRESS;
+      const TOKEN_ADDR = process.env.NEXT_PUBLIC_ESTORY_TOKEN_ADDRESS;
+      const PROTOCOL_ADDR = process.env.NEXT_PUBLIC_STORY_PROTOCOL_ADDRESS;
+      const NFT_ADDR = process.env.NEXT_PUBLIC_STORY_NFT_ADDRESS;
+
+      // Verify EStoryToken
+      await run("verify:verify", {
+        address: TOKEN_ADDR,
+        constructorArguments: [ADMIN_WALLET],
+      });
+
+      // Verify StoryProtocol
+      await run("verify:verify", {
+        address: PROTOCOL_ADDR,
+        constructorArguments: [TOKEN_ADDR, ADMIN_WALLET],
+      });
+
+      // Verify StoryNFT
+      await run("verify:verify", {
+        address: NFT_ADDR,
+        constructorArguments: [ADMIN_WALLET],
+      });
+    }
+    ```
+
+    **Output:**
+    ```
+    Starting verification on Base Sepolia...
+    Admin: 0x...
+
+    Verifying EStoryToken at 0xf9eDD76B...
+    Successfully submitted source code for contract
+    contracts/iStoryToken.sol:EStoryToken at 0xf9eDD76B...
+    for verification on the block explorer. Waiting for verification result...
+
+    Successfully verified contract EStoryToken on Etherscan.
+    https://sepolia.basescan.org/address/0xf9eDD76B...#code
+    ```
+  </Step>
+
+  <Step title="Handle Verification Errors">
+    Common errors and solutions:
+
+    | Error | Cause | Solution |
+    |-------|-------|----------|
+    | `Already Verified` | Contract already verified | No action needed (success) |
+    | `Invalid API Key` | Wrong Basescan API key | Check `BASESCAN_API_KEY` in `.env.local` |
+    | `Deprecated V1 API` | Using old API endpoint | Update `hardhat.config.ts` (see below) |
+    | `Constructor arguments mismatch` | Wrong constructor args | Check deployment script for exact args |
+    | `Compilation settings mismatch` | Optimizer settings differ | Ensure `hardhat.config.ts` matches deployment |
+
+    **Fix "Deprecated V1 API" error:**
+
+    The eStory Hardhat config uses the **V2 API endpoint** to avoid this error:
+
+    ```typescript
+    // hardhat.config.ts
+    etherscan: {
+      apiKey: {
+        baseSepolia: process.env.BASESCAN_API_KEY || "",
+      },
+      customChains: [
+        {
+          network: "baseSepolia",
+          chainId: 84532,
+          urls: {
+            // V2 API endpoint (critical fix)
+            apiURL: "https://api.etherscan.io/v2/api?chainid=84532",
+            browserURL: "https://sepolia.basescan.org",
+          },
+        },
+      ],
+    },
+    ```
+  </Step>
+</Steps>
+
+## Method 2: ABI Verification Script
+
+The **ABI verification script** (`scripts/verify-deployment.ts`) checks that deployed contracts match expected interfaces without publishing source code.
+
+<Steps>
+  <Step title="Run ABI Verification">
+    ```bash
+    npx hardhat run scripts/verify-deployment.ts --network baseSepolia
+    ```
+
+    **Script behavior:**
+    ```typescript
+    // scripts/verify-deployment.ts (simplified)
+    import { ethers } from "hardhat";
+
+    async function main() {
+      const tokenAddress = process.env.NEXT_PUBLIC_ESTORY_TOKEN_ADDRESS;
+      const protocolAddress = process.env.NEXT_PUBLIC_STORY_PROTOCOL_ADDRESS;
+      const nftAddress = process.env.NEXT_PUBLIC_STORY_NFT_ADDRESS;
+
+      // 1. Verify EStoryToken
+      const token = await ethers.getContractAt("EStoryToken", tokenAddress);
+      const name = await token.name();
+      const symbol = await token.symbol();
+      const maxSupply = await token.MAX_SUPPLY();
+
+      console.log(`Name: ${name}`);
+      console.log(`Symbol: ${symbol}`);
+      console.log(`Max Supply: ${ethers.formatEther(maxSupply)}`);
+
+      if (name !== "eStoryToken") throw new Error("Name mismatch");
+      if (symbol !== "ESTORY") throw new Error("Symbol mismatch");
+      if (maxSupply !== ethers.parseEther("100000000")) throw new Error("Max supply mismatch");
+
+      console.log("✓ EStoryToken verified successfully");
+
+      // 2. Verify StoryProtocol
+      const protocol = await ethers.getContractAt("StoryProtocol", protocolAddress);
+      const paused = await protocol.paused();
+      console.log(`Paused: ${paused}`);
+      console.log("✓ StoryProtocol verified successfully");
+
+      // 3. Verify StoryNFT
+      const nft = await ethers.getContractAt("StoryNFT", nftAddress);
+      const nftName = await nft.name();
+      const nftSymbol = await nft.symbol();
+      const mintFee = await nft.mintFee();
+
+      console.log(`Name: ${nftName}`);
+      console.log(`Symbol: ${nftSymbol}`);
+      console.log(`Mint Fee: ${ethers.formatEther(mintFee)} ETH`);
+
+      if (nftName !== "EStory Collections") throw new Error("NFT name mismatch");
+      console.log("✓ StoryNFT verified successfully");
+    }
+    ```
+
+    **Output:**
+    ```
+    Verifying deployments with account: 0x...
+    ---
+
+    [1/3] Verifying EStoryToken at 0xf9eDD76B...
+      Name: eStoryToken
+      Symbol: ESTORY
+      Decimals: 18
+      Total Supply: 1000000.0
+      Max Supply: 100000000.0
+      ✓ EStoryToken verified successfully
+
+    [2/3] Verifying StoryProtocol at 0xA51a4cA0...
+      Paused: false
+      ✓ StoryProtocol verified successfully
+
+    [3/3] Verifying StoryNFT at 0x6D37ebc5...
+      Name: EStory Collections
+      Symbol: ESTORY
+      Mint Fee: 0.001 ETH
+      ✓ StoryNFT verified successfully
+
+    ---
+    Verification complete: 3 passed, 0 failed
+    ```
+  </Step>
+
+  <Step title="Interpret Results">
+    **Success:**
+    - All 3 contracts verified (`3 passed, 0 failed`)
+    - Contract ABIs match expected interfaces
+    - View functions return correct values
+
+    **Failure:**
+    - Mismatch in name, symbol, or constants → Check deployment addresses
+    - Function call reverts → Contract may not be deployed or ABI mismatch
+    - Exit code 1 → Fix errors and re-run
+  </Step>
+</Steps>
+
+## Method 3: Sourcify Verification
+
+**Sourcify** is a decentralized verification service that stores source code on IPFS.
+
+<Steps>
+  <Step title="Enable Sourcify in Hardhat Config">
+    Already enabled in `hardhat.config.ts`:
+
+    ```typescript
+    const config: HardhatUserConfig = {
+      // ...
+      sourcify: {
+        enabled: true
+      }
+    };
+    ```
+  </Step>
+
+  <Step title="Verify on Sourcify">
+    Use Hardhat's built-in Sourcify support:
+
+    ```bash
+    npx hardhat verify --network baseSepolia <CONTRACT_ADDRESS> <CONSTRUCTOR_ARGS>
+    ```
+
+    Hardhat will **automatically submit to both Basescan and Sourcify** when `sourcify.enabled: true`.
+  </Step>
+
+  <Step title="Check Sourcify Status">
+    Visit [sourcify.dev](https://sourcify.dev) and search for your contract address:
+
+    - **Full match**: Source code exactly matches deployed bytecode (IPFS hash matches)
+    - **Partial match**: Bytecode matches but metadata differs (still verifiable)
+    - **Not verified**: Not submitted yet
+
+    **Why use Sourcify?**
+    - **Decentralized**: Source code stored on IPFS (censorship-resistant)
+    - **Chain-agnostic**: Works across all EVM chains
+    - **Open-source**: No API key required
+  </Step>
+</Steps>
+
+## Verification Checklist
+
+After deploying contracts to Base Sepolia:
+
+- [ ] Set `BASESCAN_API_KEY` in `.env.local`
+- [ ] Set contract addresses in `.env.local` (TOKEN, PROTOCOL, NFT)
+- [ ] Run `npx hardhat run scripts/verify.ts --network baseSepolia`
+- [ ] Verify all 3 contracts show "Successfully verified" or "Already Verified"
+- [ ] Check Basescan links (e.g., `https://sepolia.basescan.org/address/0x...#code`)
+- [ ] Run `npx hardhat run scripts/verify-deployment.ts --network baseSepolia`
+- [ ] Confirm `3 passed, 0 failed` in ABI verification output
+- [ ] (Optional) Check Sourcify status at [sourcify.dev](https://sourcify.dev)
+
+## Troubleshooting
+
+### Verification Fails with "Constructor arguments mismatch"
+
+**Cause:** Wrong constructor arguments passed to `verify:verify`.
+
+**Solution:** Check deployment script for exact constructor args:
+
+```typescript
+// Example: StoryProtocol deployment
+const protocol = await Protocol.deploy(tokenAddress, adminAddress);
+
+// Verify with SAME args
+await run("verify:verify", {
+  address: protocolAddress,
+  constructorArguments: [tokenAddress, adminAddress], // Must match deployment
+});
+```
+
+### Verification Shows "Compilation settings mismatch"
+
+**Cause:** Hardhat config optimizer settings differ from deployment.
+
+**Solution:** Ensure `hardhat.config.ts` optimizer matches deployment:
+
+```typescript
+solidity: {
+  version: "0.8.20",
+  settings: {
+    optimizer: {
+      enabled: true,
+      runs: 200,  // Must match deployment
+    },
+  },
+},
+```
+
+### Basescan Shows "Contract source code not verified"
+
+**Possible causes:**
+1. Verification script failed silently → Re-run with `--show-stack-traces`
+2. Contract deployed to wrong network → Check `--network` flag
+3. API key invalid → Verify `BASESCAN_API_KEY` is correct
+4. Etherscan is processing → Wait 1-2 minutes and refresh
+
+## Post-Verification
+
+Once verified, users can:
+
+1. **Read contract source** at `https://sepolia.basescan.org/address/<ADDRESS>#code`
+2. **Read contract state** via "Read Contract" tab (view functions)
+3. **Write to contract** via "Write Contract" tab (connect wallet)
+4. **View events** in "Events" tab (all emitted events)
+5. **Check constructor args** in "Contract" tab → "Constructor Arguments"
+
+**Example: Verified EStoryToken on Basescan**
+```
+https://sepolia.basescan.org/address/0xf9eDD76B...#code
+
+Contract Source Code Verified (Exact Match)
+
+Contract Name: EStoryToken
+Compiler Version: v0.8.20+commit.a1b79de6
+Optimization Enabled: Yes with 200 runs
+Runs: 200
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Contract Testing" icon="flask" href="/contracts/testing">
+    Write comprehensive tests for your contracts
+  </Card>
+  <Card title="Local Setup" icon="code" href="/contracts/local-setup">
+    Back to Hardhat configuration and compilation
+  </Card>
+</CardGroup>

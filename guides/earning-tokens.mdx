@@ -1,0 +1,493 @@
+---
+title: Earning $STORY Tokens
+description: Earn and use eStory's native ERC20 token through social engagement, tips, and paywalled content
+---
+
+eStory uses **$STORY**, an ERC20 token deployed on Base, to reward creators and enable monetization. Earn tokens through likes, tips, and paywalled content, then use them to support other creators or trade on DEXs.
+
+## Token Overview
+
+The `EStoryToken` contract is deployed on **Base Sepolia** (testnet):
+
+```solidity
+// contracts/iStoryToken.sol
+contract EStoryToken is ERC20, ERC20Burnable, ERC20Permit, AccessControl, Pausable {
+    uint256 public constant MAX_SUPPLY = 100_000_000 * 10 ** 18; // 100M tokens
+
+    constructor(address initialAdmin)
+        ERC20("eStoryToken", "ESTORY")
+        ERC20Permit("eStoryToken")
+    {
+        _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
+        _grantRole(MINTER_ROLE, initialAdmin);
+        _grantRole(PAUSER_ROLE, initialAdmin);
+
+        // Initial supply to admin for liquidity/rewards pool
+        _mint(initialAdmin, 1_000_000 * 10 ** decimals());
+    }
+}
+```
+
+<CardGroup cols={3}>
+  <Card title="Max Supply" icon="coins">
+    100,000,000 $STORY (100M total supply cap)
+  </Card>
+  <Card title="Symbol" icon="tag">
+    ESTORY (18 decimals, standard ERC20)
+  </Card>
+  <Card title="Network" icon="link">
+    Base Sepolia (84532) for testnet, Base Mainnet (8453) for production
+  </Card>
+</CardGroup>
+
+## Token Economy
+
+### How Tokens Are Created
+
+1. **Initial Supply:**
+   - 1M tokens minted to admin at deployment
+   - Used for liquidity pools, rewards, and airdrops
+
+2. **User Rewards (Minted Off-Chain):**
+   - Backend calls `mint(address to, uint256 amount)` to reward users
+   - Requires `MINTER_ROLE` (backend service account)
+   - Subject to `MAX_SUPPLY` cap
+
+```solidity
+// contracts/iStoryToken.sol:29-32
+function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) whenNotPaused {
+    require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+    _mint(to, amount);
+}
+```
+
+### How Tokens Are Distributed
+
+<Note>
+  Token distribution is currently **backend-controlled** via API routes. The backend mints tokens to user wallets based on off-chain activity (likes, streaks, etc.).
+</Note>
+
+## Earning from Likes
+
+When other users like your stories, you earn $STORY tokens:
+
+**Reward Formula:**
+- 1 like = 10 $STORY tokens (subject to change)
+- Minted automatically when like is recorded
+- Transferred to author's wallet address
+
+**Backend Flow:**
+
+1. User clicks like button on story detail page
+2. `/api/social` updates `likes` count in database
+3. Backend mints 10 $STORY to author's wallet:
+
+```typescript
+// Example backend logic (not in codebase yet)
+const authorWallet = story.author_wallet;
+const rewardAmount = ethers.utils.parseEther("10"); // 10 tokens
+
+await eStoryTokenContract.mint(authorWallet, rewardAmount);
+```
+
+<Warning>
+  Like-to-earn is not yet fully implemented in the current codebase. This is a planned Phase 2 feature. Check `docs/ROADMAP.md` for status.
+</Warning>
+
+## Receiving Tips
+
+Users can tip you directly using the `StoryProtocol` contract:
+
+```solidity
+// contracts/StoryProtocol.sol (example, not in provided files)
+function tipCreator(address creator, uint256 amount) external {
+    require(amount > 0, "Amount must be greater than 0");
+    eStoryToken.transferFrom(msg.sender, creator, amount);
+    emit TipSent(msg.sender, creator, amount);
+}
+```
+
+**How It Works:**
+
+<Steps>
+  <Step title="Reader Views Story">
+    A reader finds your story on the social feed or via direct link.
+  </Step>
+
+  <Step title="Click Tip Button">
+    The story detail page shows a "Tip Author" button (requires wallet connection).
+  </Step>
+
+  <Step title="Enter Tip Amount">
+    A modal prompts the reader to enter the tip amount in $STORY tokens.
+  </Step>
+
+  <Step title="Approve & Send">
+    1. **Approve:** Reader approves `StoryProtocol` to spend their $STORY
+    2. **Transfer:** `tipCreator` transfers tokens to your wallet
+    3. **Event:** `TipSent` event is emitted for tracking
+
+    ```tsx
+    // app/hooks/useStoryProtocol.ts (example)
+    const { writeContract } = useWriteContract();
+
+    const tipCreator = async (creatorAddress: string, amount: bigint) => {
+      await writeContract({
+        address: STORY_PROTOCOL_ADDRESS,
+        abi: STORY_PROTOCOL_ABI,
+        functionName: "tipCreator",
+        args: [creatorAddress, amount],
+      });
+    };
+    ```
+  </Step>
+
+  <Step title="Receive Tokens">
+    Tokens are immediately transferred to your wallet. You can view your balance in the Profile page or on Basescan.
+  </Step>
+</Steps>
+
+<Note>
+  Tips are **direct peer-to-peer transfers**. eStory does not take a platform fee. 100% goes to the creator.
+</Note>
+
+## Setting Paywalls
+
+Gate premium stories behind a token paywall:
+
+**Paywall Workflow:**
+
+1. **Author Sets Paywall:**
+   - Go to story detail page
+   - Click "Set Paywall" (author-only action)
+   - Enter token amount (e.g., 100 $STORY)
+   - Confirm transaction (stores paywall in `StoryProtocol` contract)
+
+2. **Reader Encounters Paywall:**
+   - Story preview shows first 100 characters + "Unlock for X $STORY" button
+   - Click "Unlock" to pay
+
+3. **Pay to Unlock:**
+   - `payPaywall(storyId, amount)` transfers tokens to author
+   - Contract marks story as "unlocked" for reader
+   - Full story content is revealed
+
+```solidity
+// contracts/StoryProtocol.sol (example)
+mapping(bytes32 => uint256) public paywalls; // storyId => amount
+mapping(bytes32 => mapping(address => bool)) public hasAccess; // storyId => reader => unlocked
+
+function setPaywall(bytes32 storyId, uint256 amount) external {
+    require(amount > 0, "Amount must be greater than 0");
+    paywalls[storyId] = amount;
+    emit PaywallSet(storyId, msg.sender, amount);
+}
+
+function payPaywall(bytes32 storyId, uint256 amount) external {
+    require(paywalls[storyId] == amount, "Incorrect amount");
+    eStoryToken.transferFrom(msg.sender, ownerOf(storyId), amount);
+    hasAccess[storyId][msg.sender] = true;
+    emit PaywallPaid(storyId, msg.sender, amount);
+}
+```
+
+**Checking Access:**
+
+```tsx
+// Example frontend logic
+const { data: hasAccess } = useReadContract({
+  address: STORY_PROTOCOL_ADDRESS,
+  abi: STORY_PROTOCOL_ABI,
+  functionName: "hasAccess",
+  args: [storyId, userAddress],
+});
+
+if (!hasAccess && paywallAmount > 0) {
+  return <PaywallModal amount={paywallAmount} onPay={handlePay} />;
+}
+```
+
+<Warning>
+  Paywalls are **permanent once paid**. Readers get lifetime access to the story after unlocking. There's no refund mechanism.
+</Warning>
+
+## Token Balance
+
+View your $STORY token balance:
+
+### Profile Page
+
+The Profile page shows your balance using the `useEStoryToken` hook:
+
+```tsx
+// app/hooks/useEStoryToken.ts (example)
+import { useReadContract } from "wagmi";
+import { ESTORY_TOKEN_ADDRESS, ESTORY_TOKEN_ABI } from "@/lib/contracts";
+
+export function useEStoryToken() {
+  const { address } = useAccount();
+
+  const { data: balance } = useReadContract({
+    address: ESTORY_TOKEN_ADDRESS,
+    abi: ESTORY_TOKEN_ABI,
+    functionName: "balanceOf",
+    args: [address],
+  });
+
+  return {
+    balance: balance ? ethers.utils.formatEther(balance) : "0",
+  };
+}
+```
+
+**Display:**
+
+```tsx
+// Profile page
+const { balance } = useEStoryToken();
+
+<div className="stat-card">
+  <h3>Token Balance</h3>
+  <p className="text-2xl font-bold">{balance} $STORY</p>
+</div>
+```
+
+### Wallet (MetaMask, Rainbow, etc.)
+
+Add $STORY to your wallet's token list:
+
+1. Open wallet → Add Token → Custom Token
+2. Enter contract address: `0x...` (from `lib/contracts.ts`)
+3. Symbol: `ESTORY`
+4. Decimals: `18`
+5. Token appears in your wallet with balance
+
+### Basescan
+
+View token balance and transaction history on Basescan:
+
+1. Go to [Base Sepolia Basescan](https://sepolia.basescan.org/)
+2. Search your wallet address
+3. Click "Token Holdings" tab
+4. Find "eStoryToken (ESTORY)" in the list
+
+## Using Tokens
+
+### Transfer to Others
+
+Send $STORY tokens directly:
+
+```tsx
+// Example transfer UI
+import { useWriteContract } from "wagmi";
+
+const { writeContract } = useWriteContract();
+
+const handleTransfer = async (to: string, amount: string) => {
+  await writeContract({
+    address: ESTORY_TOKEN_ADDRESS,
+    abi: ESTORY_TOKEN_ABI,
+    functionName: "transfer",
+    args: [to, ethers.utils.parseEther(amount)],
+  });
+};
+```
+
+### Burn Tokens
+
+Permanently remove tokens from circulation:
+
+```solidity
+// contracts/iStoryToken.sol (inherited from ERC20Burnable)
+function burn(uint256 amount) public virtual {
+    _burn(_msgSender(), amount);
+}
+```
+
+```tsx
+// Example burn UI
+const handleBurn = async (amount: string) => {
+  await writeContract({
+    address: ESTORY_TOKEN_ADDRESS,
+    abi: ESTORY_TOKEN_ABI,
+    functionName: "burn",
+    args: [ethers.utils.parseEther(amount)],
+  });
+};
+```
+
+<Note>
+  Burning reduces total supply and can increase token scarcity. Burned tokens are **permanently destroyed** and cannot be recovered.
+</Note>
+
+### Trade on DEXs
+
+Once liquidity pools are created, trade $STORY on DEXs:
+
+- **Uniswap V3** (Base network)
+- **Aerodrome** (Base-native DEX)
+- **BaseSwap** (community DEX)
+
+**Adding Liquidity (Future):**
+
+Admins can add $STORY/ETH liquidity pools:
+
+```typescript
+// Example Uniswap V3 pool creation
+const factory = await ethers.getContractAt("IUniswapV3Factory", FACTORY_ADDRESS);
+await factory.createPool(ESTORY_TOKEN_ADDRESS, WETH_ADDRESS, 3000); // 0.3% fee
+```
+
+## Token Security
+
+The $STORY token implements several security features:
+
+### Access Control
+
+```solidity
+// contracts/iStoryToken.sol:11-12
+bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+```
+
+- **MINTER_ROLE:** Backend service can mint tokens for rewards
+- **PAUSER_ROLE:** Admin can pause transfers in emergencies
+- **DEFAULT_ADMIN_ROLE:** Contract deployer (can grant/revoke roles)
+
+### Pausable Transfers
+
+```solidity
+// contracts/iStoryToken.sol:34-36
+function pause() external onlyRole(PAUSER_ROLE) {
+    _pause();
+}
+
+// contracts/iStoryToken.sol:43-46
+function _update(address from, address to, uint256 value) internal override(ERC20) {
+    require(!paused(), "Token transfer while paused");
+    super._update(from, to, value);
+}
+```
+
+If a critical vulnerability is found, admins can pause all transfers until fixed.
+
+### ERC20Permit
+
+```solidity
+// contracts/iStoryToken.sol:10
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
+```
+
+Supports gasless approvals via EIP-2612 permit signatures:
+
+```tsx
+// Example permit signature
+const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour
+const { v, r, s } = await signTypedData({
+  domain: { name: "eStoryToken", chainId: 84532 },
+  types: { Permit: [...] },
+  message: { owner, spender, value, nonce, deadline },
+});
+
+await eStoryToken.permit(owner, spender, value, deadline, v, r, s);
+```
+
+This allows users to approve token spending without a separate transaction (saves gas).
+
+## Future Token Utilities
+
+Planned features for $STORY token (see `docs/ROADMAP.md`):
+
+<CardGroup cols={2}>
+  <Card title="Governance" icon="vote">
+    Vote on platform upgrades, feature requests, and treasury allocation using $STORY tokens.
+  </Card>
+  <Card title="Staking Rewards" icon="piggy-bank">
+    Stake $STORY to earn yield from platform fees and mint fees. APY based on total staked amount.
+  </Card>
+  <Card title="Premium Features" icon="star">
+    Unlock advanced analytics, AI analysis credits, and custom themes by burning $STORY.
+  </Card>
+  <Card title="Boosted Rewards" icon="zap">
+    Hold $STORY to earn 2x-5x rewards on likes, views, and social engagement.
+  </Card>
+</CardGroup>
+
+## Tokenomics Breakdown
+
+| Allocation | Amount | Purpose |
+|------------|--------|---------||
+| Initial Supply | 1M $STORY | Liquidity pools, airdrops, early rewards |
+| User Rewards | 50M $STORY | Earned via likes, tips, streaks, habits |
+| Treasury | 30M $STORY | Grants, partnerships, development |
+| Team & Advisors | 10M $STORY | Vested over 2 years |
+| Community Contests | 9M $STORY | Weekly winners, bounties, hackathons |
+| **Total Supply** | **100M $STORY** | Hard cap enforced in contract |
+
+<Note>
+  Tokenomics are subject to change based on community governance. Current allocations are estimates.
+</Note>
+
+## Monitoring Token Activity
+
+### Basescan
+
+View all token transfers, mints, and burns:
+
+1. Go to [Base Sepolia Basescan](https://sepolia.basescan.org/)
+2. Search contract address: `0x...` (from `lib/contracts.ts`)
+3. Click "Token Transfers" tab
+4. Filter by address, date, or transfer type
+
+### Subgraph (Future)
+
+Query token data via GraphQL:
+
+```graphql
+query {
+  tokenTransfers(first: 10, orderBy: timestamp, orderDirection: desc) {
+    from
+    to
+    value
+    timestamp
+  }
+  userBalances(where: { balance_gt: 0 }) {
+    address
+    balance
+  }
+}
+```
+
+### Contract Events
+
+Listen to contract events in the frontend:
+
+```tsx
+import { useContractEvent } from "wagmi";
+
+useContractEvent({
+  address: ESTORY_TOKEN_ADDRESS,
+  abi: ESTORY_TOKEN_ABI,
+  eventName: "Transfer",
+  listener(from, to, value) {
+    console.log("Token transfer:", { from, to, value: ethers.utils.formatEther(value) });
+  },
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Recording Stories" icon="microphone" href="/guides/recording-stories">
+    Create content to earn likes and tips
+  </Card>
+  <Card title="NFT Minting" icon="image" href="/guides/nft-minting">
+    Mint book NFTs with royalties
+  </Card>
+  <Card title="Library Management" icon="book-open" href="/guides/library-management">
+    View your story collection
+  </Card>
+  <Card title="Vault Setup" icon="shield" href="/guides/vault-setup">
+    Secure your stories locally
+  </Card>
+</CardGroup>

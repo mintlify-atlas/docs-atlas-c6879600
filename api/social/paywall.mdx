@@ -1,0 +1,125 @@
+---
+title: 'Unlock Paywall'
+description: 'Pay $STORY tokens to unlock a paywalled story'
+---
+
+## Endpoint
+
+<RequestExample>
+```bash cURL
+curl -X POST https://your-domain.com/api/paywall \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199",
+    "amount": 5,
+    "storyId": 42
+  }'
+```
+</RequestExample>
+
+## Request
+
+<ParamField body="to" type="string" required>
+  The story author's wallet address to receive the payment
+</ParamField>
+
+<ParamField body="amount" type="number" required>
+  Payment amount in $STORY tokens (set by the author)
+</ParamField>
+
+<ParamField body="storyId" type="number" required>
+  The numeric ID of the paywalled story to unlock
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates if the blockchain transaction was initiated successfully
+</ResponseField>
+
+<ResponseField name="hash" type="string">
+  The blockchain transaction hash for tracking
+</ResponseField>
+
+<ResponseExample>
+```json Response
+{
+  "success": true,
+  "hash": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+}
+```
+</ResponseExample>
+
+<Warning>
+  This endpoint **initiates a blockchain transaction** via the StoryProtocol smart contract on Base Sepolia. The transaction must be signed and executed by your wallet.
+</Warning>
+
+## How Paywalls Work
+
+1. **Author sets paywall** when publishing a story (e.g., 5 $STORY tokens)
+2. **Public sees preview** (first 200 characters) with "Unlock for X $STORY" prompt
+3. **User pays** via this endpoint → blockchain transaction
+4. **Full story unlocked** after transaction confirms
+5. **Author receives tokens** minus platform fee (if applicable)
+
+## Blockchain Details
+
+- **Contract**: StoryProtocol (payment handler)
+- **Function**: `payPaywall(address to, uint256 amount, uint256 storyId)`
+- **Network**: Base Sepolia (Chain ID: 84532)
+- **Token**: eStoryToken (ERC20)
+- **Token Decimals**: 18 (1 $STORY = 1e18 wei)
+
+## Prerequisites
+
+Before calling this endpoint:
+
+1. **Connect your wallet** via RainbowKit/WalletConnect
+2. **Approve the StoryProtocol contract** to spend your $STORY tokens
+3. **Have sufficient $STORY balance** for the paywall amount
+4. **Have ETH** for gas fees on Base Sepolia
+
+## Error Responses
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | Missing required fields | One or more of `to`, `amount`, or `storyId` missing |
+| 401 | Unauthorized | Invalid or missing Bearer token |
+| 500 | Payment failed | Blockchain transaction failed (insufficient balance, gas, or approval) |
+
+<Note>
+  The `amount` parameter is in **whole tokens** (e.g., `5` = 5 $STORY tokens). The contract automatically converts this to wei (5 × 10^18).
+</Note>
+
+## Transaction Verification
+
+After receiving the transaction hash:
+
+1. **Track on block explorer**: `https://sepolia.basescan.org/tx/{hash}`
+2. **Wait for confirmation** (typically 2-5 seconds on Base)
+3. **Refresh story content** to see unlocked full text
+
+## Checking Unlock Status
+
+To verify if a user has already unlocked a story:
+
+```typescript
+// Check on-chain payment records via StoryProtocol events
+// or query your backend's payment records
+```
+
+## Related Hooks
+
+For client-side integration, use the `useStoryProtocol` hook:
+
+```typescript
+import { useStoryProtocol } from '@/app/hooks/useStoryProtocol';
+
+const { payPaywall } = useStoryProtocol();
+await payPaywall(authorAddress, amount, storyId);
+```
+
+<Note>
+  Paywall payments are **permanent unlocks** — once paid, the user has lifetime access to the full story content.
+</Note>

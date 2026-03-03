@@ -1,0 +1,106 @@
+---
+title: "Wallet Login"
+api: "POST /api/auth/login"
+description: "Verify wallet signature and create authenticated session"
+authMethod: "none"
+---
+
+Verifies the wallet signature against the nonce obtained from `/api/auth/nonce`, creates or updates the user record, and returns a JWT token for authenticated requests.
+
+## Request Body
+
+<ParamField body="address" type="string" required>
+  Ethereum wallet address that signed the message
+</ParamField>
+
+<ParamField body="signature" type="string" required>
+  Hexadecimal signature string (must start with `0x`)
+</ParamField>
+
+<ParamField body="message" type="string" required>
+  The exact message string that was signed (obtained from `/api/auth/nonce`)
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Authentication result
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  User profile object
+  <Expandable title="properties">
+    <ResponseField name="id" type="string">
+      User UUID
+    </ResponseField>
+    <ResponseField name="wallet_address" type="string">
+      Normalized wallet address (lowercase)
+    </ResponseField>
+    <ResponseField name="auth_provider" type="string">
+      Authentication method: `"wallet"`, `"google"`, or `"both"`
+    </ResponseField>
+    <ResponseField name="is_onboarded" type="boolean">
+      Whether user has completed onboarding
+    </ResponseField>
+    <ResponseField name="name" type="string" optional>
+      User's display name
+    </ResponseField>
+    <ResponseField name="username" type="string" optional>
+      Unique username
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="wallet_token" type="string">
+  JWT token for authenticated API requests. Include in `Authorization: Bearer <token>` header.
+</ResponseField>
+
+## Example Request
+
+```bash cURL
+curl -X POST "https://estory.app/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+    "signature": "0xabcdef1234567890...",
+    "message": "Welcome to EStory\n\nSign this message to log in securely...\n\nNonce: a1b2c3d4-e5f6-7890-1234-567890abcdef"
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "user": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "wallet_address": "0x742d35cc6634c0532925a3b844bc9e7595f0beb",
+    "auth_provider": "wallet",
+    "is_onboarded": false,
+    "name": null,
+    "username": null
+  },
+  "wallet_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+## Security
+
+- Signature verification using `viem`
+- Nonce validation with replay prevention
+- Automatic user creation if wallet is new
+- Updates `auth_provider` to `"both"` if wallet is linked to existing Google account
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message
+</ResponseField>
+
+| Status Code | Description |
+|-------------|-------------|
+| 400 | Missing address, signature, or message |
+| 400 | Invalid signature format (not hexadecimal) |
+| 401 | Signature verification failed |
+| 401 | Invalid or expired nonce |
+| 500 | Internal server error |

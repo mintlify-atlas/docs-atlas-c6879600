@@ -1,122 +1,203 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "eStory",
+  "theme": "palm",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#9333ea",
+    "light": "#a855f7",
+    "dark": "#7e22ce"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/Oreolion/i_story_dapp"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/Oreolion/i_story_dapp"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Features",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "features/voice-journaling",
+              "features/ai-analysis",
+              "features/blockchain-storage",
+              "features/local-vault",
+              "features/social-monetization"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Authentication",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "auth/overview",
+              "auth/wallet-auth",
+              "auth/oauth",
+              "auth/account-linking"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "User Guides",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "guides/recording-stories",
+              "guides/library-management",
+              "guides/vault-setup",
+              "guides/nft-minting",
+              "guides/earning-tokens"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/chainlink-cre",
+              "integrations/elevenlabs",
+              "integrations/gemini-ai",
+              "integrations/supabase",
+              "integrations/ipfs-pinata"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Overview",
             "pages": [
-              "api-reference/introduction"
+              "api/introduction",
+              "api/authentication",
+              "api/rate-limits",
+              "api/error-handling"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "AI Endpoints",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/ai/transcribe",
+              "api/ai/enhance",
+              "api/ai/analyze",
+              "api/ai/reflection"
+            ]
+          },
+          {
+            "group": "Auth Endpoints",
+            "pages": [
+              "api/auth/nonce",
+              "api/auth/login",
+              "api/auth/callback",
+              "api/auth/onboarding",
+              "api/auth/link-account"
+            ]
+          },
+          {
+            "group": "Story Endpoints",
+            "pages": [
+              "api/stories/save",
+              "api/stories/metadata",
+              "api/stories/feed"
+            ]
+          },
+          {
+            "group": "Social Endpoints",
+            "pages": [
+              "api/social/like",
+              "api/social/follow",
+              "api/social/tip",
+              "api/social/paywall"
+            ]
+          },
+          {
+            "group": "CRE Endpoints",
+            "pages": [
+              "api/cre/trigger",
+              "api/cre/check",
+              "api/cre/callback"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Smart Contracts",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "contracts/introduction",
+              "contracts/deployment"
+            ]
+          },
+          {
+            "group": "Contracts",
+            "pages": [
+              "contracts/istory-token",
+              "contracts/story-protocol",
+              "contracts/story-nft",
+              "contracts/verified-metrics",
+              "contracts/private-verified-metrics"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "contracts/local-setup",
+              "contracts/testing",
+              "contracts/verification"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "System Design",
+            "pages": [
+              "architecture/overview",
+              "architecture/tech-stack",
+              "architecture/security",
+              "architecture/database-schema"
+            ]
+          },
+          {
+            "group": "Frontend",
+            "pages": [
+              "architecture/components",
+              "architecture/hooks",
+              "architecture/routing"
+            ]
+          },
+          {
+            "group": "Backend",
+            "pages": [
+              "architecture/api-routes",
+              "architecture/middleware",
+              "architecture/services"
+            ]
+          },
+          {
+            "group": "Local Vault",
+            "pages": [
+              "architecture/vault/encryption",
+              "architecture/vault/key-management",
+              "architecture/vault/storage"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

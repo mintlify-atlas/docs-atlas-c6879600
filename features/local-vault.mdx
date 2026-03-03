@@ -1,0 +1,619 @@
+---
+title: Local Vault (Client-Side Encryption)
+description: PIN-protected, AES-256-GCM encrypted storage in IndexedDB for maximum privacy
+icon: lock
+---
+
+## Overview
+
+eStory's Local Vault provides client-side encryption for stories that never leave your device in plaintext. All encryption happens in the browser using Web Crypto API with AES-256-GCM, and encrypted data is stored in IndexedDB. Your PIN never leaves the device and is never sent to any server.
+
+## Encryption Architecture
+
+### Key Hierarchy
+
+The vault uses a two-tier key system:
+
+```
+PIN (6 digits)
+  ↓ PBKDF2 (100K iterations, SHA-256)
+KEK (Key Encryption Key)
+  ↓ AES-KW (wraps DEK)
+DEK (Data Encryption Key)
+  ↓ AES-256-GCM (encrypts story data)
+Encrypted Story Content
+```
+
+<Steps>
+  <Step title="PIN Entry">
+    User enters 6-digit PIN (never stored, never transmitted)
+  </Step>
+  
+  <Step title="KEK Derivation">
+    PIN + random salt → PBKDF2 (100,000 iterations) → KEK (256-bit)
+  </Step>
+  
+  <Step title="DEK Wrapping">
+    Random DEK (256-bit) wrapped with KEK using AES-KW
+  </Step>
+  
+  <Step title="Data Encryption">
+    Story content encrypted with DEK using AES-256-GCM
+  </Step>
+  
+  <Step title="Storage">
+    Encrypted data + wrapped DEK stored in IndexedDB. DEK held in memory while unlocked.
+  </Step>
+</Steps>
+
+<Info>
+  **Why two keys?** KEK protects DEK during PIN changes. Re-wrapping DEK with new KEK is instant, avoiding re-encryption of all stories.
+</Info>
+
+### AES-256-GCM Encryption
+
+All story data is encrypted with AES-256-GCM (Galois/Counter Mode):
+
+**Properties:**
+- **256-bit key** - Military-grade encryption strength
+- **Authenticated** - Detects tampering (integrity + confidentiality)
+- **Unique IV per operation** - 12-byte random nonce prevents pattern analysis
+- **Fast** - Hardware-accelerated on modern CPUs
+
+```typescript
+export async function encryptData(
+  plaintext: ArrayBuffer | BufferSource,
+  dek: CryptoKey
+): Promise<EncryptedPayload> {
+  const iv = crypto.getRandomValues(new Uint8Array(12)); // Random IV
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    dek,
+    plaintext
+  );
+  return { ciphertext, iv }; // Store both
+}
+```
+
+<Warning>
+  **Never reuse IVs!** Each encryption operation generates a fresh 12-byte random IV. Reusing IVs with the same key breaks GCM security.
+</Warning>
+
+## PIN Security
+
+### PBKDF2 Key Derivation
+
+PINs are strengthened using PBKDF2 (Password-Based Key Derivation Function 2):
+
+```typescript
+export async function derivePinKey(
+  pin: string,
+  salt: Uint8Array
+): Promise<CryptoKey> {
+  const pinBytes = new TextEncoder().encode(pin);
+  
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    pinBytes,
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+  
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt,
+      iterations: 100_000, // 100K iterations
+      hash: "SHA-256",
+    },
+    baseKey,
+    { name: "AES-KW", length: 256 },
+    false,
+    ["wrapKey", "unwrapKey"]
+  );
+}
+```
+
+**Security parameters:**
+- **Iterations**: 100,000 (OWASP recommendation for 2024+)
+- **Salt**: 16-byte random value (unique per vault)
+- **Hash**: SHA-256
+- **Output**: 256-bit KEK for AES-KW
+
+<Tip>
+  100K iterations makes each PIN guess take ~10ms on modern hardware, slowing down brute-force attacks to ~10,000 guesses/second (vs billions/second for raw SHA-256).
+</Tip>
+
+### PIN Verification
+
+To avoid slow PBKDF2 on every unlock attempt, a fast hash is stored for verification:
+
+```typescript
+export async function hashPin(
+  pin: string,
+  salt: Uint8Array
+): Promise<string> {
+  const data = new Uint8Array([...new TextEncoder().encode(pin), ...salt]);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return arrayBufferToBase64(hashBuffer);
+}
+```
+
+**Unlock flow:**
+1. User enters PIN
+2. Quick SHA-256 hash compared to stored `pin_hash`
+3. If match, derive KEK and unwrap DEK
+4. If mismatch, reject immediately (no slow PBKDF2)
+
+## IndexedDB Storage (Dexie)
+
+### Database Schema
+
+The vault uses Dexie.js to manage three IndexedDB tables:
+
+<CodeGroup>
+```typescript stories Table
+export interface LocalStoryRecord {
+  localId: string;              // UUID
+  userId: string;               // Owner ID
+  encrypted_title: string;      // Base64 ciphertext
+  title_iv: string;             // Base64 IV
+  encrypted_content: string;    // Base64 ciphertext
+  content_iv: string;           // Base64 IV
+  encrypted_audio?: string;     // Base64 ciphertext (optional)
+  audio_iv?: string;            // Base64 IV (optional)
+  encrypted_metadata?: string;  // Base64 JSON ciphertext
+  metadata_iv?: string;         // Base64 IV
+  checksum: string;             // SHA-256 of plaintext
+  cloud_id?: string;            // Supabase story ID after sync
+  sync_status: SyncStatus;      // "local" | "pending" | "synced" | "error"
+  is_public: boolean;
+  story_date: string;           // ISO 8601
+  created_at: string;
+  updated_at: string;
+}
+```
+
+```typescript vaultKeys Table
+export interface VaultKeyRecord {
+  userId: string;         // Primary key
+  salt: string;           // Base64 PBKDF2 salt
+  wrapped_dek: string;    // Base64 AES-KW wrapped DEK
+  pin_hash: string;       // Base64 SHA-256 PIN hash
+  created_at: string;
+}
+```
+
+```typescript syncQueue Table
+export interface SyncQueueRecord {
+  id?: number;                  // Auto-increment
+  storyLocalId: string;         // Reference to stories.localId
+  userId: string;
+  action: "upload" | "update" | "delete";
+  status: "pending" | "processing" | "failed";
+  retryCount: number;
+  lastAttempt?: string;
+  error?: string;
+  created_at: string;
+}
+```
+</CodeGroup>
+
+**Database initialization:**
+```typescript
+class VaultDatabase extends Dexie {
+  stories!: EntityTable<LocalStoryRecord, "localId">;
+  vaultKeys!: EntityTable<VaultKeyRecord, "userId">;
+  syncQueue!: EntityTable<SyncQueueRecord, "id">;
+
+  constructor() {
+    super("estory-vault"); // Database name
+    this.version(1).stores({
+      stories: "localId, userId, sync_status, updated_at, cloud_id",
+      vaultKeys: "userId",
+      syncQueue: "++id, storyLocalId, userId, status",
+    });
+  }
+}
+```
+
+## Vault Lifecycle
+
+### 1. Setup (First-Time)
+
+User creates a new vault by setting a 6-digit PIN:
+
+```typescript
+export async function setupVault(userId: string, pin: string): Promise<void> {
+  const db = getVaultDb();
+  
+  // Check if already exists
+  const existing = await db.vaultKeys.get(userId);
+  if (existing) throw new Error("Vault already exists");
+  
+  // Generate fresh salt and DEK
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const dek = await generateDEK(); // Random 256-bit AES-GCM key
+  
+  // Derive KEK from PIN
+  const kek = await derivePinKey(pin, salt);
+  
+  // Wrap DEK with KEK
+  const wrappedDek = await wrapDEK(dek, kek);
+  
+  // Hash PIN for verification
+  const pinHash = await hashPin(pin, salt);
+  
+  // Store in IndexedDB
+  await db.vaultKeys.put({
+    userId,
+    salt: arrayBufferToBase64(salt),
+    wrapped_dek: arrayBufferToBase64(wrappedDek),
+    pin_hash: pinHash,
+    created_at: new Date().toISOString(),
+  });
+  
+  // Hold DEK in memory (vault now unlocked)
+  dekMap.set(userId, dek);
+}
+```
+
+<Info>
+  The DEK is randomly generated once during setup and never changes. PIN changes only re-wrap the same DEK with a new KEK.
+</Info>
+
+### 2. Unlock
+
+User enters PIN to decrypt and load DEK into memory:
+
+```typescript
+export async function unlockVault(
+  userId: string,
+  pin: string
+): Promise<boolean> {
+  const db = getVaultDb();
+  const record = await db.vaultKeys.get(userId);
+  if (!record) throw new Error("No vault found");
+  
+  const salt = new Uint8Array(base64ToArrayBuffer(record.salt));
+  
+  // Quick PIN verification
+  const enteredHash = await hashPin(pin, salt);
+  if (enteredHash !== record.pin_hash) {
+    return false; // Wrong PIN
+  }
+  
+  // Derive KEK and unwrap DEK
+  const kek = await derivePinKey(pin, salt);
+  const wrappedDek = base64ToArrayBuffer(record.wrapped_dek);
+  const dek = await unwrapDEK(wrappedDek, kek);
+  
+  // Store in memory
+  dekMap.set(userId, dek);
+  return true;
+}
+```
+
+**Unlock states:**
+- ✅ **Success** - DEK loaded, user can read/write encrypted stories
+- ❌ **Wrong PIN** - Returns `false`, does not throw
+- ⚠️ **No vault** - Throws error, redirects to setup
+
+### 3. Lock
+
+User manually locks vault or auto-lock triggers:
+
+```typescript
+export function lockVault(userId: string): void {
+  dekMap.delete(userId); // Remove DEK from memory
+}
+```
+
+**Auto-lock triggers:**
+- Page close/refresh
+- Sign out (via `clearAllKeys()`)
+- Idle timeout (configurable, default 15 minutes)
+- Manual lock button
+
+<Warning>
+  Locking the vault does **not** delete encrypted stories from IndexedDB. It only removes the decryption key from memory.
+</Warning>
+
+### 4. PIN Change
+
+User changes PIN without re-encrypting all stories:
+
+```typescript
+export async function changePin(
+  userId: string,
+  oldPin: string,
+  newPin: string
+): Promise<void> {
+  const db = getVaultDb();
+  const record = await db.vaultKeys.get(userId);
+  if (!record) throw new Error("No vault found");
+  
+  // Verify old PIN
+  const oldSalt = new Uint8Array(base64ToArrayBuffer(record.salt));
+  const oldHash = await hashPin(oldPin, oldSalt);
+  if (oldHash !== record.pin_hash) {
+    throw new Error("Incorrect current PIN");
+  }
+  
+  // Get DEK from memory (vault must be unlocked)
+  const dek = getDEK(userId);
+  
+  // Generate new salt and KEK
+  const newSalt = crypto.getRandomValues(new Uint8Array(16));
+  const newKek = await derivePinKey(newPin, newSalt);
+  const newWrappedDek = await wrapDEK(dek, newKek);
+  const newPinHash = await hashPin(newPin, newSalt);
+  
+  // Update vault key record
+  await db.vaultKeys.put({
+    userId,
+    salt: arrayBufferToBase64(newSalt),
+    wrapped_dek: arrayBufferToBase64(newWrappedDek),
+    pin_hash: newPinHash,
+    created_at: record.created_at,
+  });
+}
+```
+
+**Key insight:** The same DEK is re-wrapped with new KEK. Story ciphertexts never change.
+
+## VaultGuard Component
+
+### UI Integration
+
+The `VaultGuard` component handles vault states declaratively:
+
+```tsx
+import { VaultGuard } from "@/components/vault/VaultGuard";
+
+<VaultGuard>
+  {/* Only renders when vault is unlocked */}
+  <LocalStoriesPage />
+</VaultGuard>
+```
+
+**Rendered UI by state:**
+
+<CardGroup cols={3}>
+  <Card title="Not Set Up" icon="lock">
+    Shows "Vault Not Set Up" message with link to Profile Settings.
+  </Card>
+  
+  <Card title="Locked" icon="key">
+    Shows "Vault Locked" with "Unlock Vault" button → PIN modal.
+  </Card>
+  
+  <Card title="Unlocked" icon="unlock">
+    Renders children (local stories CRUD interface).
+  </Card>
+</CardGroup>
+
+### Optional Mode
+
+For pages where vault is optional:
+
+```tsx
+<VaultGuard optional>
+  {/* Renders even if vault not set up */}
+  <StoryList />
+</VaultGuard>
+```
+
+**Use cases:**
+- Onboarding flows
+- Settings pages with vault setup button
+- Hybrid pages with cloud + local stories
+
+## Data Operations
+
+### Encrypting Stories
+
+```typescript
+import { getDEK, encryptString } from "@/lib/vault";
+
+const dek = getDEK(userId); // Throws if locked
+
+// Encrypt title and content separately
+const encTitle = await encryptString(title, dek);
+const encContent = await encryptString(content, dek);
+
+// Generate checksum for integrity
+const checksumData = new TextEncoder().encode(title + content);
+const hashBuf = await crypto.subtle.digest("SHA-256", checksumData);
+const checksum = arrayBufferToBase64(hashBuf);
+
+// Store in IndexedDB
+const record: LocalStoryRecord = {
+  localId: crypto.randomUUID(),
+  userId,
+  encrypted_title: encTitle.ciphertext,
+  title_iv: encTitle.iv,
+  encrypted_content: encContent.ciphertext,
+  content_iv: encContent.iv,
+  checksum,
+  sync_status: "local",
+  is_public: false,
+  story_date: new Date().toISOString(),
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+};
+
+const db = getVaultDb();
+await db.stories.put(record);
+```
+
+### Decrypting Stories
+
+```typescript
+import { getDEK, decryptString } from "@/lib/vault";
+
+const dek = getDEK(userId);
+
+// Fetch encrypted record
+const db = getVaultDb();
+const record = await db.stories.get(localId);
+
+// Decrypt title and content
+const title = await decryptString(record.encrypted_title, record.title_iv, dek);
+const content = await decryptString(record.encrypted_content, record.content_iv, dek);
+
+// Verify checksum
+const checksumData = new TextEncoder().encode(title + content);
+const hashBuf = await crypto.subtle.digest("SHA-256", checksumData);
+const computedChecksum = arrayBufferToBase64(hashBuf);
+
+if (computedChecksum !== record.checksum) {
+  throw new Error("Checksum mismatch: data corrupted or tampered");
+}
+```
+
+### Reactive Queries (useLiveQuery)
+
+The `useLocalStories` hook provides reactive access to vault stories:
+
+```typescript
+import { useLocalStories } from "@/app/hooks/useLocalStories";
+
+const { stories, create, update, remove } = useLocalStories();
+
+// stories: automatically decrypted, updates on IndexedDB changes
+// create: async (title, content) => localId
+// update: async (localId, { title, content }) => void
+// remove: async (localId) => void
+```
+
+**Powered by Dexie's `useLiveQuery`**:
+- Auto-refreshes on IndexedDB mutations
+- Decryption happens in background
+- Loading states managed automatically
+
+## Cloud Sync (Optional)
+
+### Sync Strategy
+
+Vault stories can optionally sync to Supabase (encrypted):
+
+**Sync flow:**
+```
+Local Encrypted Story (IndexedDB)
+  ↓ (user enables sync)
+  Upload to Supabase (still encrypted)
+  ↓
+  Server stores ciphertext + IV (no decryption key)
+  ↓
+  Other devices download ciphertext
+  ↓
+  Decrypt locally with same PIN-derived DEK
+```
+
+<Warning>
+  **Cloud sync requires exporting vault key material** (wrapped DEK + salt) to Supabase. This allows recovery on new devices but creates a server-side backup of encrypted keys. For maximum privacy, keep sync disabled.
+</Warning>
+
+### Sync Queue
+
+The `syncQueue` table tracks pending uploads:
+
+```typescript
+// Queue story for sync
+await db.syncQueue.add({
+  storyLocalId: record.localId,
+  userId,
+  action: "upload",
+  status: "pending",
+  retryCount: 0,
+  created_at: new Date().toISOString(),
+});
+
+// Background worker processes queue
+const pendingOps = await db.syncQueue
+  .where("status")
+  .equals("pending")
+  .toArray();
+
+for (const op of pendingOps) {
+  try {
+    await uploadEncryptedStory(op.storyLocalId);
+    await db.syncQueue.delete(op.id!);
+  } catch (err) {
+    await db.syncQueue.update(op.id!, {
+      status: "failed",
+      retryCount: op.retryCount + 1,
+      error: err.message,
+      lastAttempt: new Date().toISOString(),
+    });
+  }
+}
+```
+
+## Security Considerations
+
+### Threat Model
+
+<AccordionGroup>
+  <Accordion title="✅ Protects Against" icon="shield-check">
+    - **Server breach**: Encrypted data useless without client-side PIN
+    - **Network interception**: Only ciphertext transmitted
+    - **Browser history/cache**: No plaintext in localStorage/sessionStorage
+    - **Malicious extensions**: DEK never exposed to window globals
+  </Accordion>
+  
+  <Accordion title="❌ Does NOT Protect Against" icon="shield-xmark">
+    - **Keyloggers**: PIN can be captured during entry
+    - **Malicious website**: XSS can read IndexedDB and memory
+    - **Device theft (if unlocked)**: DEK in memory until lock/close
+    - **Weak PINs**: 6-digit = 1M combinations (use strong PINs like 123456 → 982743)
+  </Accordion>
+</AccordionGroup>
+
+### Best Practices
+
+<Steps>
+  <Step title="Use Strong PINs">
+    Avoid sequential (123456) or repeated (111111) digits. Use random 6-digit codes.
+  </Step>
+  
+  <Step title="Enable Auto-Lock">
+    Set idle timeout to 5-15 minutes to auto-lock vault when inactive.
+  </Step>
+  
+  <Step title="Disable Cloud Sync for Max Privacy">
+    Keep stories 100% local if you don't need multi-device access.
+  </Step>
+  
+  <Step title="Backup Vault Key Material">
+    Export `wrapped_dek` + `salt` to secure location (password manager, encrypted USB).
+  </Step>
+  
+  <Step title="Verify Checksums">
+    Always check `checksum` field after decryption to detect tampering.
+  </Step>
+</Steps>
+
+## Implementation Reference
+
+**Source files:**
+- `lib/vault/crypto.ts:1-203` - Encryption primitives
+- `lib/vault/keyManager.ts:1-228` - Key lifecycle
+- `lib/vault/db.ts:1-107` - IndexedDB schema
+- `lib/vault/index.ts:1-50` - Barrel exports
+- `components/vault/VaultGuard.tsx:1-89` - UI wrapper
+- `app/hooks/useVault.ts` - React hook for vault operations
+- `app/hooks/useLocalStories.ts` - CRUD operations
+
+**Key algorithms:**
+- **Key derivation**: PBKDF2-SHA256 (100K iterations)
+- **Key wrapping**: AES-KW (RFC 3394)
+- **Data encryption**: AES-256-GCM
+- **Integrity**: SHA-256 checksums
+
+**Browser requirements:**
+- `window.crypto.subtle` (Web Crypto API)
+- IndexedDB support
+- ES2020+ (async/await, BigInt)

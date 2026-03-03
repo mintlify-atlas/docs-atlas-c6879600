@@ -1,0 +1,105 @@
+---
+title: "Link Wallet to Account"
+api: "POST /api/auth/link-account"
+description: "Link a wallet address to an existing Google-authenticated account"
+authMethod: "bearer"
+---
+
+Links a wallet address to an existing user account. The wallet signature must be verified before linking. This allows users who signed in with Google to add wallet authentication.
+
+<Note>
+This endpoint requires the user to be authenticated with Google OAuth. The wallet signature is verified to ensure ownership.
+</Note>
+
+## Request Body
+
+<ParamField body="userId" type="string" required>
+  User UUID (must match authenticated user)
+</ParamField>
+
+<ParamField body="walletAddress" type="string" required>
+  Ethereum wallet address to link
+</ParamField>
+
+<ParamField body="signature" type="string" required>
+  Hexadecimal signature proving wallet ownership
+</ParamField>
+
+<ParamField body="message" type="string" required>
+  The message that was signed by the wallet
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Operation result
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Updated user profile
+  <Expandable title="properties">
+    <ResponseField name="id" type="string">
+      User UUID
+    </ResponseField>
+    <ResponseField name="wallet_address" type="string">
+      Linked wallet address (normalized to lowercase)
+    </ResponseField>
+    <ResponseField name="auth_provider" type="string">
+      Set to `"both"` after successful wallet linking
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example Request
+
+```bash cURL
+curl -X POST "https://estory.app/api/auth/link-account" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "userId": "550e8400-e29b-41d4-a716-446655440000",
+    "walletAddress": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+    "signature": "0xabcdef1234567890...",
+    "message": "Link wallet to eStory account\nNonce: xyz789"
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "user": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "wallet_address": "0x742d35cc6634c0532925a3b844bc9e7595f0beb",
+    "auth_provider": "both",
+    "name": "Alice Johnson",
+    "email": "alice@example.com"
+  }
+}
+```
+
+## Security
+
+- Signature verification using `viem` before linking
+- Prevents linking a wallet already associated with another account
+- Updates Supabase auth metadata with wallet address
+- Wallet address is normalized to lowercase
+- Requires valid JWT token from authenticated session
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message
+</ResponseField>
+
+| Status Code | Description |
+|-------------|-------------|
+| 400 | Missing userId |
+| 400 | Missing wallet linking fields (walletAddress, signature, message) |
+| 400 | Invalid signature format |
+| 401 | Unauthorized (missing or invalid token) |
+| 401 | Signature verification failed |
+| 403 | Forbidden (userId does not match authenticated user) |
+| 409 | Wallet already linked to another account |
+| 500 | Internal server error |

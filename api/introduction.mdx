@@ -1,0 +1,219 @@
+---
+title: "API Reference"
+description: "Complete reference for eStory's REST API"
+---
+
+## Overview
+
+eStory provides a RESTful API for managing voice journals, AI-powered story analysis, blockchain verification, and social interactions. All API routes are secured with Bearer token authentication and rate limiting.
+
+## Base URL
+
+```
+https://your-domain.vercel.app/api
+```
+
+For local development:
+```
+http://localhost:3000/api
+```
+
+## Architecture
+
+The eStory API is built on Next.js 15 App Router with the following stack:
+
+- **Framework:** Next.js 15.5.9 API Routes
+- **Database:** Supabase (PostgreSQL)
+- **Authentication:** Bearer tokens (Supabase JWT + Custom Wallet JWT)
+- **Storage:** Supabase Storage + Pinata IPFS
+- **AI:** Google Gemini 2.5 Flash, ElevenLabs Scribe
+- **Blockchain:** Base Sepolia (Chainlink CRE)
+
+## Endpoint Categories
+
+### AI Endpoints
+
+AI-powered content processing and analysis.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/ai/transcribe` | POST | Transcribe audio to text via ElevenLabs Scribe |
+| `/api/ai/enhance` | POST | Enhance story text with AI formatting |
+| `/api/ai/analyze` | POST | Extract metadata from stories (themes, emotional tone, insights) |
+| `/api/ai/reflection` | POST | Generate weekly reflection summaries |
+
+**Rate limit:** 10 requests/minute
+
+### Authentication Endpoints
+
+Wallet-based and OAuth authentication flows.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/auth/nonce` | GET | Generate nonce for wallet signature |
+| `/api/auth/login` | POST | Verify signature and create session |
+| `/api/auth/callback` | GET | Handle OAuth redirects (Google) |
+| `/api/auth/onboarding` | POST | Complete user onboarding |
+| `/api/auth/link-account` | POST | Link wallet to existing account |
+| `/api/auth/link-google` | POST | Link Google OAuth to wallet account |
+| `/api/auth/initiate-link` | POST | Start account linking flow |
+
+**Rate limit:** 20 requests/minute
+
+### Story Endpoints
+
+CRUD operations for personal stories and journals.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/stories` | GET | Fetch authenticated user's stories |
+| `/api/stories` | POST | Create a new story |
+| `/api/stories/feed` | GET | Fetch public stories for social feed |
+| `/api/stories/[storyId]/metadata` | GET | Fetch story metadata (themes, insights) |
+| `/api/journal/save` | POST | Save journal entry with audio |
+
+**Rate limit:** 60 requests/minute (default)
+
+### Social Endpoints
+
+Social interactions (likes, follows, tips).
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/social/like` | POST | Like/unlike a story |
+| `/api/social/follow` | POST | Follow/unfollow a user |
+| `/api/tip` | POST | Send $STORY tokens as tips |
+
+**Rate limit:** 60 requests/minute (default)
+
+### CRE Verification Endpoints
+
+Chainlink Compute Runtime Environment (CRE) for verifiable AI analysis.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/cre/trigger` | POST | Trigger CRE verification workflow |
+| `/api/cre/callback` | POST | Receive CRE verification results (internal) |
+| `/api/cre/check` | GET | Check CRE verification status |
+
+**Rate limit:** 60 requests/minute (trigger/check), 30 requests/minute (callback)
+
+<Note>
+  The `/api/cre/callback` endpoint has a higher rate limit (30/min) because multiple DON nodes call it per verification.
+</Note>
+
+### Other Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/books` | GET | Fetch user's story books (NFTs) |
+| `/api/book/compile` | POST | Compile stories into an NFT book |
+| `/api/habits` | GET/POST | Track journaling habits |
+| `/api/notifications` | GET/POST | Manage user notifications |
+| `/api/user/profile` | GET | Fetch user profile |
+| `/api/paywall` | POST | Pay to unlock premium stories |
+| `/api/ipfs/upload` | POST | Upload content to IPFS |
+| `/api/email/send` | POST | Send emails via Resend (rate limit: 5/min) |
+| `/api/waitlist` | POST | Join waitlist (rate limit: 10/min) |
+
+## Response Format
+
+All API endpoints return JSON responses in one of two formats:
+
+### Success Response
+
+```json
+{
+  "success": true,
+  "data": {
+    // Response payload
+  }
+}
+```
+
+For analysis endpoints:
+```json
+{
+  "success": true,
+  "metadata": {
+    "themes": ["growth", "identity"],
+    "emotional_tone": "reflective",
+    "life_domain": "relationships",
+    "intensity_score": 0.7,
+    "significance_score": 0.8
+  },
+  "insight": "This story reflects a journey of self-discovery..."
+}
+```
+
+### Error Response
+
+```json
+{
+  "error": "Human-readable error message"
+}
+```
+
+With optional error code:
+```json
+{
+  "error": "Story already verified",
+  "code": "ALREADY_VERIFIED"
+}
+```
+
+## HTTP Status Codes
+
+| Code | Meaning | When Used |
+|------|---------|----------|
+| `200` | OK | Successful request |
+| `201` | Created | Resource created successfully |
+| `400` | Bad Request | Invalid input or missing required fields |
+| `401` | Unauthorized | Missing or invalid authentication token |
+| `403` | Forbidden | User lacks permission for this resource |
+| `404` | Not Found | Resource does not exist |
+| `409` | Conflict | Resource already exists or operation conflicts with current state |
+| `429` | Too Many Requests | Rate limit exceeded |
+| `500` | Internal Server Error | Server error (never leaks internal details) |
+
+## Security
+
+All API routes implement a layered security model:
+
+1. **Rate Limiting** (middleware.ts) — Route-specific request limits
+2. **Bearer Token Auth** — JWT validation via `validateAuthOrReject()`
+3. **Input Validation** — File size, MIME type, text length checks
+4. **Ownership Verification** — Users can only modify their own resources
+5. **Error Sanitization** — Never leak internal error messages
+
+<Warning>
+  All endpoints (except `/api/auth/nonce` and `/api/waitlist`) require authentication. See [Authentication](/api/authentication) for details.
+</Warning>
+
+## CORS Configuration
+
+The API supports cross-origin requests from:
+
+- `http://localhost:3000` (Next.js dev)
+- `http://localhost:8081` (Expo dev)
+- `http://localhost:19006` (Expo web)
+- `https://e-story-dapp.vercel.app` (production)
+- `https://istory.vercel.app` (production)
+
+Allowed methods: `GET, POST, PUT, DELETE, PATCH, OPTIONS`
+
+Allowed headers: `Content-Type, Authorization`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/api/authentication">
+    Learn how to authenticate API requests
+  </Card>
+  <Card title="Rate Limits" icon="gauge" href="/api/rate-limits">
+    Understand rate limiting policies
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/api/error-handling">
+    Handle errors gracefully
+  </Card>
+</CardGroup>

@@ -1,0 +1,243 @@
+---
+title: Encryption Architecture
+description: AES-256-GCM encryption with PBKDF2 key derivation for eStory's local vault
+---
+
+# Encryption Architecture
+
+eStory's local vault uses **AES-256-GCM** encryption with **PBKDF2** key derivation to protect stories stored in IndexedDB. The PIN never leaves the device — it's only used to derive keys locally.
+
+## Encryption Flow
+
+The encryption architecture follows a two-tier key hierarchy:
+
+```
+PIN (6 digits)
+  ↓ PBKDF2 (100K iterations, SHA-256)
+KEK (Key Encryption Key)
+  ↓ AES-KW (wraps)
+DEK (Data Encryption Key)
+  ↓ AES-256-GCM (encrypts)
+Encrypted Story Data
+```
+
+<Note>
+**Why two keys?** The KEK (derived from PIN) wraps the DEK (random key). This allows PIN changes without re-encrypting all stories — only the wrapped DEK is re-encrypted.
+</Note>
+
+## Key Components
+
+### PBKDF2 Key Derivation
+
+The KEK is derived from the user's PIN using PBKDF2 with 100,000 iterations, making brute-force attacks computationally expensive (~10ms/guess).
+
+```typescript
+// Source: lib/vault/crypto.ts:44-71
+export async function derivePinKey(
+  pin: string,
+  salt: Uint8Array
+): Promise<CryptoKey> {
+  const encoder = new TextEncoder();
+  const pinBytes = encoder.encode(pin);
+
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    pinBytes,
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: salt as unknown as BufferSource,
+      iterations: 100_000,
+      hash: "SHA-256",
+    },
+    baseKey,
+    { name: "AES-KW", length: 256 },
+    false,
+    ["wrapKey", "unwrapKey"]
+  );
+}
+```
+
+**Parameters:**
+- **Salt:** 16 random bytes (generated once during vault setup)
+- **Iterations:** 100,000 (OWASP minimum for PBKDF2-SHA256)
+- **Output:** 256-bit AES-KW key (used for key wrapping only)
+
+### AES-256-GCM Encryption
+
+Story data is encrypted using AES-256-GCM, an authenticated encryption algorithm that provides both confidentiality and integrity.
+
+```typescript
+// Source: lib/vault/crypto.ts:127-138
+export async function encryptData(
+  plaintext: ArrayBuffer | BufferSource,
+  dek: CryptoKey
+): Promise<EncryptedPayload> {
+  const iv = generateIV();
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv as unknown as BufferSource },
+    dek,
+    plaintext
+  );
+  return { ciphertext, iv };
+}
+```
+
+<Warning>
+**Unique IVs:** Each encryption operation generates a fresh 12-byte IV using `crypto.getRandomValues()`. Never reuse an IV with the same key — this breaks GCM security.
+</Warning>
+
+### Data Encryption Key (DEK)
+
+The DEK is a random 256-bit AES key used to encrypt story content:
+
+```typescript
+// Source: lib/vault/crypto.ts:78-84
+export async function generateDEK(): Promise<CryptoKey> {
+  return crypto.subtle.generateKey(
+    { name: "AES-GCM", length: 256 },
+    true, // extractable — needed for key wrapping
+    ["encrypt", "decrypt"]
+  );
+}
+```
+
+## String Encryption Helpers
+
+For convenience, `encryptString` and `decryptString` handle UTF-8 encoding/decoding automatically:
+
+```typescript
+// Source: lib/vault/crypto.ts:177-202
+export async function encryptString(
+  plaintext: string,
+  dek: CryptoKey
+): Promise<{ ciphertext: string; iv: string }> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plaintext);
+  const { ciphertext, iv } = await encryptData(data.buffer as ArrayBuffer, dek);
+  return {
+    ciphertext: arrayBufferToBase64(ciphertext),
+    iv: arrayBufferToBase64(iv.buffer),
+  };
+}
+
+export async function decryptString(
+  ciphertextB64: string,
+  ivB64: string,
+  dek: CryptoKey
+): Promise<string> {
+  const ciphertext = base64ToArrayBuffer(ciphertextB64);
+  const iv = new Uint8Array(base64ToArrayBuffer(ivB64));
+  const plaintext = await decryptData(ciphertext, iv, dek);
+  return new TextDecoder().decode(plaintext);
+}
+```
+
+**Usage:**
+```typescript
+import { encryptString, decryptString } from "@/lib/vault";
+
+const dek = getDEK(userId);
+const encrypted = await encryptString("My secret story", dek);
+// → { ciphertext: "base64...", iv: "base64..." }
+
+const plaintext = await decryptString(encrypted.ciphertext, encrypted.iv, dek);
+// → "My secret story"
+```
+
+## Encrypted Payload Format
+
+Each encrypted field is stored as a pair: `ciphertext` (base64) + `iv` (base64).
+
+```typescript
+export interface EncryptedPayload {
+  ciphertext: ArrayBuffer;
+  iv: Uint8Array;
+}
+```
+
+**Example IndexedDB record:**
+```json
+{
+  "localId": "uuid",
+  "encrypted_title": "base64-ciphertext",
+  "title_iv": "base64-iv",
+  "encrypted_content": "base64-ciphertext",
+  "content_iv": "base64-iv",
+  "encrypted_metadata": "base64-ciphertext",
+  "metadata_iv": "base64-iv",
+  "checksum": "base64-sha256"
+}
+```
+
+## PIN Verification Hash
+
+A quick SHA-256 hash is used to verify the PIN without full key derivation:
+
+```typescript
+// Source: lib/vault/crypto.ts:162-170
+export async function hashPin(
+  pin: string,
+  salt: Uint8Array
+): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = new Uint8Array([...encoder.encode(pin), ...salt]);
+  const hashBuffer = await crypto.subtle.digest(
+    "SHA-256",
+    data as unknown as BufferSource
+  );
+  return arrayBufferToBase64(hashBuffer);
+}
+```
+
+<Note>
+This hash is **NOT** used for cryptographic operations — only for quick PIN validation before attempting expensive PBKDF2 derivation + unwrapping.
+</Note>
+
+## Security Properties
+
+<Accordion title="Why AES-256-GCM?">
+**AES-256-GCM** provides:
+- **Confidentiality:** Strong encryption with 256-bit key
+- **Authenticity:** Built-in authentication tag (detects tampering)
+- **Performance:** Hardware-accelerated on modern devices
+- **NIST-approved:** FIPS 140-2 compliant
+</Accordion>
+
+<Accordion title="Why 100K iterations?">
+OWASP recommends **600K+ iterations** for PBKDF2-SHA256 (2023), but we use **100K** as a balance between:
+- **Security:** ~10ms/guess on modern hardware (6-digit PIN = 10⁶ possibilities)
+- **UX:** Sub-second unlock time on mobile devices
+- **Future-proof:** Iteration count can be increased in schema migrations
+</Accordion>
+
+<Accordion title="What if the PIN is weak?">
+A 6-digit PIN has 1 million possibilities. With 100K PBKDF2 iterations:
+- **Brute-force time:** ~2.7 hours on modern CPU
+- **Mitigation:** Rate limiting (lockout after 5 failed attempts)
+- **Alternative:** Support longer PINs/passphrases in future versions
+</Accordion>
+
+## File Reference
+
+**Location:** `~/workspace/source/lib/vault/crypto.ts`
+
+**Exports:**
+- `derivePinKey` — PBKDF2 key derivation
+- `generateDEK` — Random AES-256-GCM key
+- `encryptData` / `decryptData` — Low-level encryption
+- `encryptString` / `decryptString` — High-level UTF-8 helpers
+- `wrapDEK` / `unwrapDEK` — AES-KW key wrapping
+- `hashPin` — Quick PIN verification
+- `arrayBufferToBase64` / `base64ToArrayBuffer` — Encoding utilities
+
+---
+
+**Related:**
+- [Key Management](/architecture/vault/key-management) — KEK/DEK lifecycle
+- [Storage](/architecture/vault/storage) — IndexedDB schema

@@ -1,0 +1,411 @@
+---
+title: Contract Testing Guide
+description: Write and run Hardhat tests for eStory smart contracts
+---
+
+# Contract Testing Guide
+
+This guide covers testing patterns for eStory smart contracts using Hardhat's testing framework (Mocha, Chai, and ethers.js).
+
+<Note>
+  **Prerequisites**: Hardhat installed and contracts compiled. See [Local Contract Development](/contracts/local-setup) first.
+</Note>
+
+## Testing Framework
+
+eStory uses **Hardhat Toolbox** which includes:
+
+- **Mocha**: JavaScript test runner
+- **Chai**: Assertion library with `expect()` syntax
+- **ethers.js**: Ethereum library for contract interaction
+- **Hardhat Network**: In-memory blockchain for fast testing
+
+### Test File Structure
+
+Create test files in the `test/` directory (not `__tests__/`, which is for Vitest app tests):
+
+```
+i_story_dapp/
+├── contracts/           # Solidity contracts
+├── test/                # Hardhat contract tests
+│   ├── EStoryToken.test.ts
+│   ├── StoryProtocol.test.ts
+│   └── StoryNFT.test.ts
+└── __tests__/           # Vitest app tests (separate)
+```
+
+## Writing Tests
+
+### Basic Test Template
+
+```typescript
+import { expect } from "chai";
+import { ethers } from "hardhat";
+import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+
+describe("ContractName", function () {
+  // Fixture: Deploy contract once and reuse across tests
+  async function deployContractFixture() {
+    const [owner, addr1, addr2] = await ethers.getSigners();
+    const Contract = await ethers.getContractFactory("ContractName");
+    const contract = await Contract.deploy(/* constructor args */);
+
+    return { contract, owner, addr1, addr2 };
+  }
+
+  describe("Deployment", function () {
+    it("Should set the right owner", async function () {
+      const { contract, owner } = await loadFixture(deployContractFixture);
+      expect(await contract.owner()).to.equal(owner.address);
+    });
+  });
+});
+```
+
+### Example: EStoryToken Tests
+
+```typescript
+import { expect } from "chai";
+import { ethers } from "hardhat";
+import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+
+describe("EStoryToken", function () {
+  async function deployTokenFixture() {
+    const [owner, addr1, addr2] = await ethers.getSigners();
+    const Token = await ethers.getContractFactory("EStoryToken");
+    const token = await Token.deploy(owner.address);
+
+    // Mint initial supply to owner
+    await token.mint(owner.address, ethers.parseEther("1000000")); // 1M tokens
+
+    return { token, owner, addr1, addr2 };
+  }
+
+  describe("Deployment", function () {
+    it("Should have correct name and symbol", async function () {
+      const { token } = await loadFixture(deployTokenFixture);
+      expect(await token.name()).to.equal("eStoryToken");
+      expect(await token.symbol()).to.equal("ESTORY");
+    });
+
+    it("Should have max supply of 100M tokens", async function () {
+      const { token } = await loadFixture(deployTokenFixture);
+      const maxSupply = await token.MAX_SUPPLY();
+      expect(maxSupply).to.equal(ethers.parseEther("100000000"));
+    });
+  });
+
+  describe("Transfers", function () {
+    it("Should transfer tokens between accounts", async function () {
+      const { token, owner, addr1 } = await loadFixture(deployTokenFixture);
+      const amount = ethers.parseEther("100");
+
+      await expect(token.transfer(addr1.address, amount))
+        .to.changeTokenBalances(token, [owner, addr1], [-amount, amount]);
+    });
+
+    it("Should fail if sender doesn't have enough tokens", async function () {
+      const { token, owner, addr1 } = await loadFixture(deployTokenFixture);
+      const ownerBalance = await token.balanceOf(owner.address);
+
+      await expect(
+        token.connect(addr1).transfer(owner.address, 1)
+      ).to.be.revertedWith("ERC20: transfer amount exceeds balance");
+    });
+  });
+
+  describe("Minting", function () {
+    it("Should allow admin to mint tokens", async function () {
+      const { token, owner, addr1 } = await loadFixture(deployTokenFixture);
+      const amount = ethers.parseEther("1000");
+
+      await expect(token.mint(addr1.address, amount))
+        .to.emit(token, "Transfer")
+        .withArgs(ethers.ZeroAddress, addr1.address, amount);
+
+      expect(await token.balanceOf(addr1.address)).to.equal(amount);
+    });
+
+    it("Should fail to mint beyond max supply", async function () {
+      const { token, owner } = await loadFixture(deployTokenFixture);
+      const maxSupply = await token.MAX_SUPPLY();
+
+      await expect(
+        token.mint(owner.address, maxSupply)
+      ).to.be.revertedWith("EStoryToken: max supply exceeded");
+    });
+  });
+});
+```
+
+### Example: StoryNFT Tests
+
+```typescript
+import { expect } from "chai";
+import { ethers } from "hardhat";
+import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+
+describe("StoryNFT", function () {
+  async function deployNFTFixture() {
+    const [owner, addr1, addr2] = await ethers.getSigners();
+    const NFT = await ethers.getContractFactory("StoryNFT");
+    const nft = await NFT.deploy(owner.address);
+
+    return { nft, owner, addr1, addr2 };
+  }
+
+  describe("Minting", function () {
+    it("Should mint NFT with correct fee", async function () {
+      const { nft, addr1 } = await loadFixture(deployNFTFixture);
+      const mintFee = await nft.mintFee(); // 0.001 ETH
+      const ipfsHash = "QmTest123...";
+
+      await expect(
+        nft.connect(addr1).mintBook(ipfsHash, { value: mintFee })
+      )
+        .to.emit(nft, "Transfer")
+        .withArgs(ethers.ZeroAddress, addr1.address, 1);
+
+      expect(await nft.ownerOf(1)).to.equal(addr1.address);
+      expect(await nft.tokenURI(1)).to.include(ipfsHash);
+    });
+
+    it("Should fail if mint fee is insufficient", async function () {
+      const { nft, addr1 } = await loadFixture(deployNFTFixture);
+      const ipfsHash = "QmTest123...";
+
+      await expect(
+        nft.connect(addr1).mintBook(ipfsHash, { value: 0 })
+      ).to.be.revertedWith("Insufficient mint fee");
+    });
+  });
+});
+```
+
+## Testing Patterns
+
+### 1. Fixtures (loadFixture)
+
+**Why use fixtures?**
+- Deploys contracts once and snapshots state
+- Reverts to snapshot before each test (faster than re-deploying)
+- Ensures test isolation
+
+```typescript
+async function deployFixture() {
+  // Setup code (runs once per describe block)
+  const [owner, addr1] = await ethers.getSigners();
+  const Contract = await ethers.getContractFactory("MyContract");
+  const contract = await Contract.deploy();
+  return { contract, owner, addr1 };
+}
+
+it("test case", async function () {
+  const { contract, owner } = await loadFixture(deployFixture);
+  // Test code (fresh state on each test)
+});
+```
+
+### 2. Signer Management
+
+```typescript
+const [owner, addr1, addr2] = await ethers.getSigners();
+
+// Call as owner (default)
+await contract.adminFunction();
+
+// Call as addr1
+await contract.connect(addr1).userFunction();
+```
+
+### 3. Event Testing
+
+```typescript
+// Check event emission
+await expect(contract.doSomething())
+  .to.emit(contract, "EventName")
+  .withArgs(arg1, arg2);
+
+// Check multiple events
+await expect(contract.doSomething())
+  .to.emit(contract, "Event1")
+  .to.emit(contract, "Event2");
+```
+
+### 4. Revert Testing
+
+```typescript
+// Expect revert with message
+await expect(
+  contract.restrictedFunction()
+).to.be.revertedWith("Access denied");
+
+// Expect revert without caring about message
+await expect(contract.badFunction()).to.be.reverted;
+
+// Expect custom error (Solidity 0.8.4+)
+await expect(
+  contract.customErrorFunction()
+).to.be.revertedWithCustomError(contract, "ErrorName");
+```
+
+### 5. Balance Changes
+
+```typescript
+// Check ETH balance changes
+await expect(
+  contract.connect(addr1).withdraw({ value: ethers.parseEther("1") })
+).to.changeEtherBalances([addr1, contract], [ethers.parseEther("-1"), ethers.parseEther("1")]);
+
+// Check ERC20 token balance changes
+await expect(
+  token.transfer(addr1.address, 100)
+).to.changeTokenBalances(token, [owner, addr1], [-100, 100]);
+```
+
+### 6. Time Manipulation
+
+```typescript
+import { time } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+
+// Increase time by 1 day
+await time.increase(86400);
+
+// Set specific timestamp
+await time.increaseTo(1234567890);
+
+// Get latest block timestamp
+const latest = await time.latest();
+```
+
+## Running Tests
+
+<Steps>
+  <Step title="Run All Tests">
+    ```bash
+    npx hardhat test
+    ```
+
+    **Output:**
+    ```
+    EStoryToken
+      Deployment
+        ✓ Should have correct name and symbol (523ms)
+        ✓ Should have max supply of 100M tokens (89ms)
+      Transfers
+        ✓ Should transfer tokens between accounts (234ms)
+        ...
+
+    5 passing (2s)
+    ```
+  </Step>
+
+  <Step title="Run Specific Test File">
+    ```bash
+    npx hardhat test test/EStoryToken.test.ts
+    ```
+  </Step>
+
+  <Step title="Run Tests with Gas Reporting">
+    ```bash
+    REPORT_GAS=true npx hardhat test
+    ```
+
+    Shows gas usage per function call:
+    ```
+    ·------------------------------------|------------------------|
+    |  Methods                           |  Gas                  |
+    ·············|·······················|···········|············|
+    |  Contract  |  Method               |  Min      |  Max      |
+    ·············|·······················|···········|············|
+    |  Token     |  transfer             |  51234    |  68234    |
+    |  Token     |  mint                 |  73421    |  73421    |
+    ```
+  </Step>
+
+  <Step title="Generate Coverage Report">
+    ```bash
+    npx hardhat coverage
+    ```
+
+    Generates code coverage report in `coverage/` directory.
+  </Step>
+</Steps>
+
+## Test Coverage Best Practices
+
+Ensure tests cover:
+
+1. **Happy paths** - Normal operations succeed
+2. **Edge cases** - Zero amounts, max values, empty arrays
+3. **Access control** - Only authorized users can call admin functions
+4. **Reverts** - Functions fail with correct error messages
+5. **Events** - Events are emitted with correct parameters
+6. **State changes** - Balances, ownership, flags update correctly
+7. **Reentrancy** - External calls don't allow reentrancy attacks
+8. **Integer overflow** - Safe math (Solidity 0.8+ has built-in checks)
+
+## Integration with Vitest
+
+eStory uses **two separate test suites**:
+
+| Test Suite | Framework | Location | Purpose |
+|------------|-----------|----------|----------|
+| **Contract tests** | Hardhat (Mocha/Chai) | `test/*.test.ts` | Smart contract unit tests |
+| **App tests** | Vitest | `__tests__/**/*.test.ts` | Frontend/API tests |
+
+**Run contract tests:**
+```bash
+npx hardhat test
+```
+
+**Run app tests:**
+```bash
+npx vitest run
+```
+
+<Warning>
+  Do NOT put Hardhat tests in `__tests__/` directory. Vitest will try to run them and fail due to incompatible imports.
+</Warning>
+
+## Example: Testing Vault Crypto (Vitest)
+
+For reference, here's how the eStory app tests vault encryption (in `__tests__/vault/crypto.test.ts`):
+
+```typescript
+import { describe, it, expect } from "vitest";
+import {
+  generateDEK,
+  wrapDEK,
+  unwrapDEK,
+  encryptString,
+  decryptString,
+} from "@/lib/vault/crypto";
+
+describe("Vault Crypto", () => {
+  it("encrypts and decrypts strings", async () => {
+    const dek = await generateDEK();
+    const message = "This is a journal entry with emoji: 📝";
+    const { ciphertext, iv } = await encryptString(message, dek);
+
+    expect(typeof ciphertext).toBe("string"); // base64
+    expect(typeof iv).toBe("string"); // base64
+
+    const decrypted = await decryptString(ciphertext, iv, dek);
+    expect(decrypted).toBe(message);
+  });
+});
+```
+
+This is **not** a Hardhat test (it uses Vitest and tests browser Web Crypto API, not smart contracts).
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Contract Verification" icon="check-circle" href="/contracts/verification">
+    Verify deployed contracts on Basescan and Sourcify
+  </Card>
+  <Card title="Local Setup" icon="code" href="/contracts/local-setup">
+    Back to Hardhat installation and project structure
+  </Card>
+</CardGroup>

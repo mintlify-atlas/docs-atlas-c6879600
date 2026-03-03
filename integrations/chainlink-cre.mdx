@@ -1,0 +1,387 @@
+---
+title: "Chainlink CRE Integration"
+description: "Privacy-preserving verifiable AI analysis using Chainlink Compute Runtime Environment"
+---
+
+## Overview
+
+The Chainlink CRE (Compute Runtime Environment) integration provides privacy-preserving verifiable AI analysis for stories. It combines off-chain AI computation with on-chain attestation, ensuring story content remains private while metrics are cryptographically verified.
+
+## Architecture
+
+The CRE workflow follows an 8-step process:
+
+```
+Trigger → AI Analysis → On-Chain Proof → Off-Chain Callback
+```
+
+### Dual-Write System
+
+```
+POST /api/cre/trigger
+        ↓
+  CRE Workflow (Chainlink DON)
+        ↓
+  Gemini AI (encrypted enclave)
+        ↓
+  ┌─────────────────┬─────────────────┐
+  ↓                 ↓                 
+On-Chain           Off-Chain
+PrivateVerified    Supabase
+Metrics.sol        (full metrics)
+(proof only)       (author-only)
+        ↓                 ↓
+        └────────┬────────┘
+                 ↓
+     POST /api/cre/check
+```
+
+## Privacy Model
+
+<Note>
+Story content **never leaves the encrypted DON enclave** unencrypted. Only minimal cryptographic proofs are written on-chain.
+</Note>
+
+### On-Chain Data (Public)
+
+- **Quality Tier** (1-5): Derived from quality score ranges
+- **Threshold Flag**: Boolean indicating if quality score ≥ 70
+- **Metrics Hash**: `keccak256(scores + themes + salt)`
+- **Author Commitment**: `keccak256(authorWallet, storyId)`
+- **Attestation ID**: Story identifier
+- **Timestamp**: Verification time
+
+### Off-Chain Data (Author-Only)
+
+- Significance Score (0-100)
+- Emotional Depth (1-5)
+- Quality Score (0-100)
+- Word Count
+- Themes (array)
+
+## CRE Workflow Components
+
+### 1. HTTP Trigger
+
+The workflow starts with an HTTP trigger containing the story data:
+
+```typescript
+interface TriggerInput {
+  storyId: string;
+  title: string;
+  content: string;
+  authorWallet: string;
+}
+```
+
+### 2. AI Analysis (Gemini)
+
+AI analysis runs inside the encrypted enclave using `ConfidentialHTTPClient`:
+
+```typescript
+const confClient = new ConfidentialHTTPClient();
+
+const metrics = confClient
+  .sendRequest(
+    runtime,
+    buildGeminiRequest(title, content),
+    consensusIdenticalAggregation<GeminiResult>()
+  )(runtime.config)
+  .result();
+```
+
+**Metrics Returned:**
+- `significanceScore`: 0-100 (personal growth impact)
+- `emotionalDepth`: 1-5 (emotional intensity)
+- `qualityScore`: 0-100 (writing quality)
+- `wordCount`: Exact word count
+- `themes`: 2-5 main themes (e.g., "growth", "family")
+
+### 3. Privacy Field Derivation
+
+```typescript
+// Quality tier: 0-20=1, 21-40=2, 41-60=3, 61-80=4, 81-100=5
+const qualityTier = scoreToTier(metrics.qualityScore);
+
+// Threshold flag
+const meetsQualityThreshold = metrics.qualityScore >= 70;
+
+// Cryptographic commitments
+const metricsHash = keccak256(
+  encodeAbiParameters(
+    parseAbiParameters(
+      "uint8 significanceScore, uint8 emotionalDepth, uint8 qualityScore, uint32 wordCount, string[] themes, bytes32 salt"
+    ),
+    [metrics.significanceScore, metrics.emotionalDepth, metrics.qualityScore, metrics.wordCount, metrics.themes, salt]
+  )
+);
+
+const authorCommitment = keccak256(
+  encodePacked(["address", "bytes32"], [authorWallet, storyIdBytes32])
+);
+```
+
+### 4. DON Consensus
+
+Multiple DON nodes independently:
+1. Execute the workflow
+2. Call Gemini API with identical inputs
+3. Compute cryptographic proofs
+4. Sign the report
+
+<Info>
+Chainlink DON nodes reach consensus on the analysis results before writing on-chain, ensuring tamper-proof verification.
+</Info>
+
+### 5. On-Chain Report
+
+The signed report is written to `PrivateVerifiedMetrics.sol`:
+
+```solidity
+struct MinimalMetrics {
+    bool meetsQualityThreshold;
+    uint8 qualityTier;
+    bytes32 metricsHash;
+    bytes32 authorCommitment;
+    bytes32 attestationId;
+    uint256 verifiedAt;
+    bool exists;
+}
+```
+
+### 6. Confidential Callback
+
+Full metrics are sent to the eStory API via encrypted callback:
+
+```typescript
+const callbackPayload = {
+  storyId,
+  authorWallet,
+  metricsHash,
+  txHash,
+  significanceScore,
+  emotionalDepth,
+  qualityScore,
+  wordCount,
+  themes,
+  qualityTier,
+  meetsQualityThreshold,
+};
+
+confClient.sendRequest(
+  runtime,
+  buildCallbackRequest(callbackBody),
+  consensusIdenticalAggregation<{ success: boolean }>()
+)(runtime.config).result();
+```
+
+## Smart Contract: PrivateVerifiedMetrics
+
+**Network**: Base Sepolia (Chain ID: 84532)  
+**Address**: `0x158e08BC...` (see `lib/contracts.ts`)
+
+### Key Functions
+
+#### getMetrics
+
+```solidity
+function getMetrics(bytes32 storyId) external view returns (
+    bool meetsQualityThreshold,
+    uint8 qualityTier,
+    bytes32 metricsHash,
+    bytes32 authorCommitment,
+    bytes32 attestationId,
+    uint256 verifiedAt
+)
+```
+
+Returns minimal on-chain metrics (public).
+
+#### verifyAuthor
+
+```solidity
+function verifyAuthor(bytes32 storyId, address author) external view returns (bool)
+```
+
+Proves authorship without revealing the author's address on-chain. Returns `true` if:
+
+```solidity
+keccak256(abi.encodePacked(author, storyId)) == authorCommitment
+```
+
+#### verifyMetricsHash
+
+```solidity
+function verifyMetricsHash(bytes32 storyId, bytes32 hash) external view returns (bool)
+```
+
+Verifies full metrics integrity. The author can prove their off-chain metrics match the on-chain commitment.
+
+### Events
+
+```solidity
+event MetricsVerified(
+    bytes32 indexed storyId,
+    bytes32 indexed authorCommitment,
+    uint8 qualityTier,
+    bool meetsQualityThreshold
+);
+```
+
+## API Integration
+
+### Trigger Verification
+
+```typescript
+// POST /api/cre/trigger
+const response = await fetch('/api/cre/trigger', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    storyId: 'uuid',
+    title: 'My Story',
+    content: 'Story text...',
+    authorWallet: '0x...',
+  }),
+});
+
+const { workflowExecutionId } = await response.json();
+```
+
+### Check Verification Status
+
+```typescript
+// POST /api/cre/check
+const response = await fetch('/api/cre/check', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ storyId: 'uuid' }),
+});
+
+const { metrics, proof } = await response.json();
+// Author sees full metrics
+// Public sees proof only (tier, threshold, hashes)
+```
+
+### Frontend Hook
+
+```typescript
+import { useVerifiedMetrics } from '@/app/hooks/useVerifiedMetrics';
+
+function StoryCard({ storyId, isAuthor }) {
+  const { metrics, proof, isLoading } = useVerifiedMetrics(storyId, isAuthor);
+  
+  return (
+    <div>
+      {proof && (
+        <Badge>Quality Tier {proof.qualityTier}/5</Badge>
+      )}
+      {isAuthor && metrics && (
+        <div>
+          <p>Significance: {metrics.significanceScore}/100</p>
+          <p>Themes: {metrics.themes.join(', ')}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# CRE Workflow (set in cre/secrets/)
+CRE_ETH_PRIVATE_KEY=0x...
+GEMINI_API_KEY=AIza...
+CALLBACK_SECRET=secret...
+
+# Contract Address
+NEXT_PUBLIC_PRIVATE_VERIFIED_METRICS_ADDRESS=0x158e08BC...
+```
+
+### Workflow Config
+
+```json
+// cre/iStory_workflow/config.staging.json
+{
+  "geminiModel": "gemini-2.5-flash",
+  "callbackUrl": "https://app.estory.ai/api/cre/callback",
+  "owner": "0x...",
+  "evms": [
+    {
+      "verifiedMetricsAddress": "0x158e08BC...",
+      "chainSelectorName": "base-sepolia",
+      "gasLimit": "500000"
+    }
+  ]
+}
+```
+
+## Development Commands
+
+```bash
+# Navigate to CRE directory
+cd cre/iStory_workflow
+
+# Install dependencies
+bun install
+
+# Simulate workflow locally
+cre workflow simulate iStory_workflow
+
+# Simulate with on-chain write
+cre workflow simulate iStory_workflow --broadcast
+
+# Deploy workflow (requires early access)
+cre workflow deploy iStory_workflow
+```
+
+## Security Considerations
+
+<Note>
+**Critical**: Story content is encrypted in transit and at rest within the DON enclave. Only the DON nodes can decrypt it during analysis.
+</Note>
+
+1. **Enclave Isolation**: Gemini API calls use `ConfidentialHTTPClient` to ensure story content never leaves the enclave unencrypted
+2. **Vault DON Secrets**: API keys are stored in Chainlink Vault DON, injected via template syntax `{{.geminiApiKey}}`
+3. **Consensus**: Multiple DON nodes must agree on results before writing on-chain
+4. **Minimal On-Chain Data**: Only cryptographic proofs and tier/threshold are public
+5. **Author-Filtered API**: Full metrics are only returned to the story author
+
+## Error Handling
+
+### Workflow Failures
+
+If the CRE workflow fails (e.g., Gemini API timeout), the workflow throws an error and no on-chain write occurs. The callback is non-critical—if it fails, the on-chain proof still exists.
+
+### Retry Logic
+
+The workflow includes exponential backoff for Gemini API calls:
+
+```typescript
+for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  try {
+    const result = await model.generateContent(prompt);
+    return result;
+  } catch (error) {
+    if (attempt < MAX_RETRIES) {
+      const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+```
+
+## References
+
+- [Chainlink CRE Documentation](https://docs.chain.link/chainlink-functions/cre)
+- [Private Verified Metrics Contract](/contracts/private-verified-metrics)
+- [Architecture: Hooks](/architecture/hooks)

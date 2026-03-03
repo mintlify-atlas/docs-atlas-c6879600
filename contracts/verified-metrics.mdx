@@ -1,0 +1,455 @@
+---
+title: "VerifiedMetrics (Legacy)"
+description: "Original CRE-attested story metrics contract (full data on-chain)"
+---
+
+## Overview
+
+The **VerifiedMetrics** contract stores AI-verified story quality metrics attested by Chainlink CRE (Compute Runtime Environment). This is the **legacy version** that stores full metrics data on-chain for complete transparency.
+
+**Status:** Legacy contract, maintained for backward compatibility. New deployments should use **PrivateVerifiedMetrics** for privacy-preserving attestation.
+
+**Contract Address (Base Sepolia):** `0x052B52A4...`
+
+## Architecture
+
+### How It Works
+1. User creates a story in eStory
+2. Backend triggers CRE workflow (`POST /api/cre/trigger`)
+3. Chainlink DON nodes fetch story, run AI analysis (Gemini), and reach consensus
+4. DON nodes sign the report and send it to **KeystoneForwarder** (`0x82300bd7...`)
+5. Forwarder verifies signatures and calls `onReport()` on this contract
+6. Contract decodes and stores metrics on-chain
+7. Buyers can view verified metrics before purchasing paywalled content
+
+### Trust Model
+- **Chainlink DON**: Decentralized network of nodes performs AI analysis in TEE (Trusted Execution Environment)
+- **Cryptographic Proofs**: DON node signatures prove the analysis was performed correctly
+- **On-Chain Attestation**: Metrics are immutable once written (cannot be edited by author or platform)
+
+## Features
+
+### Full Data On-Chain
+All metrics are stored on-chain:
+- Significance Score (0-100)
+- Emotional Depth (1-5)
+- Quality Score (0-100)
+- Word Count
+- Themes (string array)
+- Attestation ID (unique report identifier)
+
+### CRE Integration
+Extends `ReceiverTemplate` interface to receive signed reports from Chainlink KeystoneForwarder.
+
+### Public Verification
+Anyone can verify metrics by calling `getMetrics(storyId)` on-chain.
+
+## Constructor
+
+```solidity
+constructor(address _forwarderAddress)
+```
+
+<ParamField path="_forwarderAddress" type="address">
+  Address of the Chainlink KeystoneForwarder contract (Base Sepolia: `0x82300bd7c3958625581cc2f77bc6464dcecdf3e5`)
+</ParamField>
+
+## Structs
+
+<Accordion title="Metrics">
+  Stores all verified metrics for a story.
+
+  ```solidity
+  struct Metrics {
+      uint8 significanceScore;   // 0-100: How important/meaningful the story is
+      uint8 emotionalDepth;      // 1-5: Emotional impact level
+      uint8 qualityScore;        // 0-100: Overall writing quality
+      uint32 wordCount;          // Number of words
+      string[] themes;           // Extracted themes (e.g., ["growth", "loss", "hope"])
+      bytes32 attestationId;     // Unique CRE report identifier
+      uint256 verifiedAt;        // Block timestamp of verification
+      bool exists;               // Whether metrics exist for this story
+  }
+  ```
+</Accordion>
+
+## State Variables
+
+<ParamField path="metrics" type="mapping(bytes32 => Metrics)">
+  Maps storyId (bytes32 keccak256 hash) to verified metrics
+</ParamField>
+
+## Events
+
+<Accordion title="MetricsVerified">
+  Emitted when a story's metrics are verified and stored on-chain.
+
+  ```solidity
+  event MetricsVerified(
+      bytes32 indexed storyId,       // Story identifier
+      address indexed author,        // Author wallet address (public)
+      uint8 significanceScore,
+      uint8 emotionalDepth,
+      uint8 qualityScore,
+      uint32 wordCount,
+      bytes32 attestationId
+  );
+  ```
+
+  **Privacy Note:** This event broadcasts the author's wallet address and all scores publicly. Use **PrivateVerifiedMetrics** if privacy is required.
+</Accordion>
+
+## Functions
+
+<Accordion title="_processReport(bytes calldata report)">
+  Internal function called by `ReceiverTemplate.onReport()` to decode and store CRE report data.
+
+  **Visibility:** `internal`
+
+  **Called By:** `onReport()` (from `ReceiverTemplate`), which is called by `KeystoneForwarder` after signature verification
+
+  **Parameters:**
+  - `report` (bytes) - ABI-encoded report data from CRE workflow
+
+  **Report Encoding:**
+  ```solidity
+  abi.decode(
+      report,
+      (bytes32 storyId, address author, uint8 significanceScore,
+       uint8 emotionalDepth, uint8 qualityScore, uint32 wordCount,
+       string[] themes, bytes32 attestationId)
+  )
+  ```
+
+  **Validation:**
+  - `significanceScore <= 100`
+  - `emotionalDepth >= 1 && emotionalDepth <= 5`
+  - `qualityScore <= 100`
+
+  **Implementation:**
+  ```solidity
+  function _processReport(bytes calldata report) internal override {
+      (
+          bytes32 storyId,
+          address author,
+          uint8 significanceScore,
+          uint8 emotionalDepth,
+          uint8 qualityScore,
+          uint32 wordCount,
+          string[] memory themes,
+          bytes32 attestationId
+      ) = abi.decode(
+          report,
+          (bytes32, address, uint8, uint8, uint8, uint32, string[], bytes32)
+      );
+
+      require(significanceScore <= 100, "Significance out of range");
+      require(emotionalDepth >= 1 && emotionalDepth <= 5, "Emotional depth out of range");
+      require(qualityScore <= 100, "Quality out of range");
+
+      metrics[storyId] = Metrics({
+          significanceScore: significanceScore,
+          emotionalDepth: emotionalDepth,
+          qualityScore: qualityScore,
+          wordCount: wordCount,
+          themes: themes,
+          attestationId: attestationId,
+          verifiedAt: block.timestamp,
+          exists: true
+      });
+
+      emit MetricsVerified(
+          storyId,
+          author,
+          significanceScore,
+          emotionalDepth,
+          qualityScore,
+          wordCount,
+          attestationId
+      );
+  }
+  ```
+</Accordion>
+
+<Accordion title="getMetrics(bytes32 storyId)">
+  Get all verified metrics for a story.
+
+  **Access:** `public view`
+
+  **Parameters:**
+  - `storyId` (bytes32) - Story identifier (keccak256 hash)
+
+  **Returns:**
+  - `significanceScore` (uint8) - 0-100
+  - `emotionalDepth` (uint8) - 1-5
+  - `qualityScore` (uint8) - 0-100
+  - `wordCount` (uint32)
+  - `themes` (string[]) - Array of theme strings
+  - `attestationId` (bytes32) - CRE report ID
+  - `verifiedAt` (uint256) - Block timestamp
+
+  **Requirements:**
+  - Metrics must exist for the story (reverts with "Not verified" otherwise)
+
+  ```solidity
+  function getMetrics(bytes32 storyId) external view returns (
+      uint8 significanceScore,
+      uint8 emotionalDepth,
+      uint8 qualityScore,
+      uint32 wordCount,
+      string[] memory themes,
+      bytes32 attestationId,
+      uint256 verifiedAt
+  ) {
+      require(metrics[storyId].exists, "Not verified");
+      Metrics storage m = metrics[storyId];
+      return (
+          m.significanceScore,
+          m.emotionalDepth,
+          m.qualityScore,
+          m.wordCount,
+          m.themes,
+          m.attestationId,
+          m.verifiedAt
+      );
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  const storyId = ethers.keccak256(ethers.toUtf8Bytes('story-123'));
+  const metrics = await verifiedMetrics.getMetrics(storyId);
+  
+  console.log('Quality Score:', metrics.qualityScore);
+  console.log('Themes:', metrics.themes);
+  ```
+</Accordion>
+
+<Accordion title="isVerified(bytes32 storyId)">
+  Check if a story has verified metrics.
+
+  **Access:** `public view`
+
+  **Parameters:**
+  - `storyId` (bytes32) - Story identifier
+
+  **Returns:**
+  - `bool` - `true` if metrics exist, `false` otherwise
+
+  ```solidity
+  function isVerified(bytes32 storyId) external view returns (bool) {
+      return metrics[storyId].exists;
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  const storyId = ethers.keccak256(ethers.toUtf8Bytes('story-123'));
+  const verified = await verifiedMetrics.isVerified(storyId);
+  
+  if (verified) {
+    // Show "Verified" badge
+  }
+  ```
+</Accordion>
+
+<Accordion title="getAttestationId(bytes32 storyId)">
+  Get the CRE attestation ID for a verified story.
+
+  **Access:** `public view`
+
+  **Parameters:**
+  - `storyId` (bytes32) - Story identifier
+
+  **Returns:**
+  - `bytes32` - Attestation ID from CRE report
+
+  **Requirements:**
+  - Metrics must exist for the story
+
+  ```solidity
+  function getAttestationId(bytes32 storyId) external view returns (bytes32) {
+      require(metrics[storyId].exists, "Not verified");
+      return metrics[storyId].attestationId;
+  }
+  ```
+</Accordion>
+
+## CRE Integration Flow
+
+### 1. Trigger CRE Workflow
+```typescript
+// POST /api/cre/trigger
+const response = await fetch('/api/cre/trigger', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    storyId: 'story-123',
+    text: 'My personal story text...',
+    authorAddress: '0xAuthorWallet...'
+  })
+});
+```
+
+### 2. CRE Workflow Execution
+```typescript
+// cre/iStory_workflow/main.ts (simplified)
+async function main(secretsRequest) {
+  // 1. Fetch story data via ConfidentialHTTPClient
+  const storyData = await fetchStory(secretsRequest.storyId);
+  
+  // 2. Run AI analysis (Gemini)
+  const analysis = await analyzeStory(storyData.text);
+  
+  // 3. Encode report for on-chain storage
+  const report = encodeAbiParameters([
+    { type: 'bytes32', name: 'storyId' },
+    { type: 'address', name: 'author' },
+    { type: 'uint8', name: 'significanceScore' },
+    { type: 'uint8', name: 'emotionalDepth' },
+    { type: 'uint8', name: 'qualityScore' },
+    { type: 'uint32', name: 'wordCount' },
+    { type: 'string[]', name: 'themes' },
+    { type: 'bytes32', name: 'attestationId' }
+  ], [
+    storyId,
+    authorAddress,
+    analysis.significanceScore,
+    analysis.emotionalDepth,
+    analysis.qualityScore,
+    analysis.wordCount,
+    analysis.themes,
+    attestationId
+  ]);
+  
+  // 4. Send report to KeystoneForwarder (writes to contract)
+  await sendReport(report);
+}
+```
+
+### 3. On-Chain Verification
+```typescript
+// Frontend: Check if story is verified
+const storyId = ethers.keccak256(ethers.toUtf8Bytes('story-123'));
+const isVerified = await verifiedMetrics.isVerified(storyId);
+
+if (isVerified) {
+  const metrics = await verifiedMetrics.getMetrics(storyId);
+  console.log('Verified Quality Score:', metrics.qualityScore);
+}
+```
+
+## Backward Compatibility
+
+This contract is maintained for backward compatibility with early eStory deployments. New features should integrate with **PrivateVerifiedMetrics** instead.
+
+### Migration Path
+1. Deploy **PrivateVerifiedMetrics** contract
+2. Update backend to trigger privacy-preserving CRE workflow
+3. Maintain read access to legacy **VerifiedMetrics** for old stories
+4. Display "Legacy Verified" badge for old contracts, "Verified" badge for new ones
+
+### Differences from PrivateVerifiedMetrics
+
+| Feature | VerifiedMetrics (Legacy) | PrivateVerifiedMetrics (Current) |
+|---------|--------------------------|----------------------------------|
+| Data on-chain | Full metrics (scores, themes, author) | Minimal (tier, threshold, hashes) |
+| Privacy | Author address public | Author commitment hash (private) |
+| Themes | Public string array | Off-chain (Supabase) |
+| Use case | Full transparency | Privacy-preserving proof |
+
+## Security Considerations
+
+### Signature Verification
+The `KeystoneForwarder` verifies DON node signatures before calling `onReport()`. This contract trusts the forwarder to perform signature verification correctly.
+
+### Immutability
+Once metrics are written, they cannot be updated. This prevents tampering but means errors in CRE reports are permanent.
+
+### Privacy Trade-offs
+All metrics are public on-chain. Authors cannot hide low scores or sensitive themes. Consider using **PrivateVerifiedMetrics** for privacy-sensitive deployments.
+
+## Integration Examples
+
+### Frontend: Display Verified Badge
+```typescript
+import { useVerifiedMetrics } from '@/app/hooks/useVerifiedMetrics';
+import { ethers } from 'ethers';
+
+function StoryCard({ storyId, title }) {
+  const { isVerified, metrics } = useVerifiedMetrics(storyId);
+  
+  return (
+    <div>
+      <h3>{title}</h3>
+      {isVerified && (
+        <div className="verified-badge">
+          ✓ Verified by Chainlink CRE
+          <p>Quality: {metrics?.qualityScore}/100</p>
+          <p>Themes: {metrics?.themes.join(', ')}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+### Backend: Poll for Verification
+```typescript
+import { ethers } from 'ethers';
+import { VERIFIED_METRICS_ADDRESS, VERIFIED_METRICS_ABI } from '@/lib/contracts';
+
+const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC);
+const contract = new ethers.Contract(VERIFIED_METRICS_ADDRESS, VERIFIED_METRICS_ABI, provider);
+
+async function waitForVerification(storyId: string, maxWaitMs = 60000) {
+  const storyIdHash = ethers.keccak256(ethers.toUtf8Bytes(storyId));
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < maxWaitMs) {
+    const verified = await contract.isVerified(storyIdHash);
+    if (verified) {
+      const metrics = await contract.getMetrics(storyIdHash);
+      return metrics;
+    }
+    await new Promise(resolve => setTimeout(resolve, 5000)); // Poll every 5s
+  }
+  
+  throw new Error('Verification timeout');
+}
+```
+
+## Source Code
+
+View the full contract implementation:
+`/workspace/source/contracts/legacy/VerifiedMetrics.sol:1`
+
+```solidity
+contract VerifiedMetrics is ReceiverTemplate {
+
+    struct Metrics {
+        uint8 significanceScore;   // 0-100
+        uint8 emotionalDepth;      // 1-5
+        uint8 qualityScore;        // 0-100
+        uint32 wordCount;
+        string[] themes;
+        bytes32 attestationId;
+        uint256 verifiedAt;
+        bool exists;
+    }
+
+    mapping(bytes32 => Metrics) public metrics;
+
+    event MetricsVerified(
+        bytes32 indexed storyId,
+        address indexed author,
+        uint8 significanceScore,
+        uint8 emotionalDepth,
+        uint8 qualityScore,
+        uint32 wordCount,
+        bytes32 attestationId
+    );
+
+    constructor(address _forwarderAddress) ReceiverTemplate(_forwarderAddress) {}
+}
+```

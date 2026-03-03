@@ -1,0 +1,120 @@
+---
+title: "Complete Onboarding"
+api: "POST /api/auth/onboarding"
+description: "Complete new user setup with profile information"
+authMethod: "bearer"
+---
+
+Completes user onboarding by setting name, username, and email. Requires authentication.
+
+<Note>
+This endpoint can only be called by the authenticated user for their own account.
+</Note>
+
+## Request Body
+
+<ParamField body="userId" type="string" required>
+  User UUID (must match authenticated user)
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Display name (minimum 2 characters)
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  Unique username (3-20 characters, alphanumeric and underscores only)
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Email address (must be valid format)
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Operation result
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Updated user profile
+  <Expandable title="properties">
+    <ResponseField name="id" type="string">
+      User UUID
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Display name
+    </ResponseField>
+    <ResponseField name="username" type="string">
+      Unique username
+    </ResponseField>
+    <ResponseField name="email" type="string">
+      Email address
+    </ResponseField>
+    <ResponseField name="is_onboarded" type="boolean">
+      Set to `true` after successful onboarding
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example Request
+
+```bash cURL
+curl -X POST "https://estory.app/api/auth/onboarding" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "userId": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "Alice Johnson",
+    "username": "alice_j",
+    "email": "alice@example.com"
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "user": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "Alice Johnson",
+    "username": "alice_j",
+    "email": "alice@example.com",
+    "is_onboarded": true,
+    "wallet_address": "0x742d35cc6634c0532925a3b844bc9e7595f0beb",
+    "auth_provider": "wallet"
+  }
+}
+```
+
+## Validation Rules
+
+### Name
+- Minimum 2 characters
+
+### Username
+- 3-20 characters
+- Letters, numbers, and underscores only
+- Must be unique across all users
+- Regex: `^[a-zA-Z0-9_]{3,20}$`
+
+### Email
+- Must be valid email format
+- Regex: `^[^\s@]+@[^\s@]+\.[^\s@]+$`
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message
+</ResponseField>
+
+| Status Code | Description |
+|-------------|-------------|
+| 400 | Missing required fields |
+| 400 | Name too short (< 2 characters) |
+| 400 | Invalid username format |
+| 400 | Invalid email format |
+| 401 | Unauthorized (missing or invalid token) |
+| 403 | Forbidden (userId does not match authenticated user) |
+| 409 | Username already taken |
+| 500 | Internal server error |

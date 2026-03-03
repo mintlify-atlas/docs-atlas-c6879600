@@ -1,0 +1,263 @@
+---
+title: Voice Journaling
+description: Browser-based voice recording with AI-powered transcription using ElevenLabs Scribe
+icon: mic
+---
+
+## Overview
+
+eStory's voice journaling feature transforms spoken words into text with industry-leading accuracy. The system captures audio directly in the browser, transcribes it using ElevenLabs Scribe API, and stores both the recording and transcript in Supabase.
+
+## Audio Capture Architecture
+
+### Browser Audio Recording
+
+The recording system uses the Web Audio API with optimized settings for speech:
+
+```typescript
+const stream = await navigator.mediaDevices.getUserMedia({
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    sampleRate: 16000,
+  },
+});
+```
+
+**Key features:**
+- **Echo cancellation** removes feedback from speakers
+- **Noise suppression** filters background sounds
+- **16kHz sample rate** optimized for speech (reduces file size)
+- **MediaRecorder API** captures audio as WebM blobs
+
+<Info>
+  The recording continues until manually stopped, with a live duration counter updating every second.
+</Info>
+
+### Recording Flow
+
+<Steps>
+  <Step title="Start Recording">
+    User taps the microphone button. The app requests microphone permission and initializes MediaRecorder.
+  </Step>
+  
+  <Step title="Capture Audio">
+    Audio chunks are collected in memory as the user speaks. A live timer displays elapsed recording time.
+  </Step>
+  
+  <Step title="Stop Recording">
+    User taps the stop button. Audio chunks are combined into a single Blob and the stream is closed.
+  </Step>
+  
+  <Step title="Transcription">
+    The audio blob is automatically sent to ElevenLabs Scribe for transcription (see below).
+  </Step>
+</Steps>
+
+## ElevenLabs Scribe Transcription
+
+### API Integration
+
+Transcription happens via the `/api/ai/transcribe` endpoint:
+
+```typescript
+const formData = new FormData();
+formData.append("file", audioBlob);
+
+const response = await fetch("/api/ai/transcribe", {
+  method: "POST",
+  headers: { Authorization: `Bearer ${token}` },
+  body: formData,
+});
+
+const { text } = await response.json();
+```
+
+**Transcription features:**
+- **Multi-language support** - Automatic language detection
+- **Speaker diarization** - Distinguishes between multiple speakers
+- **Punctuation & formatting** - AI adds natural punctuation
+- **Fast processing** - Typically completes in 2-5 seconds
+
+<Warning>
+  Transcription requires an active internet connection and authenticated session. The API enforces rate limits (10 requests/minute).
+</Warning>
+
+### Error Handling
+
+The transcription system includes comprehensive error handling:
+
+| Error Type | User Message | Recovery |
+|------------|--------------|----------|
+| Auth failure | "Please sign in to transcribe audio" | Redirect to login |
+| Empty audio | "No audio detected. Please try again." | Allow retry |
+| API timeout | "Transcription taking longer than usual..." | Auto-retry once |
+| Rate limit | "Too many requests. Try again in 1 minute." | Show countdown |
+
+## Real-Time Display
+
+### Live Transcription Updates
+
+Transcribed text appears immediately in an editable textarea:
+
+```typescript
+setTranscribedText((prev) => (prev ? prev + " " + text : text));
+```
+
+- **Append mode** - Multiple recordings concatenate with spaces
+- **Editable** - Users can correct transcription errors inline
+- **Auto-save** - Draft text persists in sessionStorage
+- **Character count** - Minimum 50 characters required for save
+
+### Recording States
+
+The UI reflects four distinct states:
+
+<CardGroup cols={2}>
+  <Card title="Idle" icon="circle">
+    Microphone button ready. Displays "Tap to start recording" hint.
+  </Card>
+  
+  <Card title="Recording" icon="circle-dot">
+    Red pulsing ring animation. Live duration counter. Stop button active.
+  </Card>
+  
+  <Card title="Transcribing" icon="loader">
+    Spinner animation. "AI is transcribing..." message. Buttons disabled.
+  </Card>
+  
+  <Card title="Ready to Save" icon="check">
+    Green "Save" button enabled. Audio badge shown. Edit tools available.
+  </Card>
+</CardGroup>
+
+## Audio Storage
+
+### Supabase Storage Upload
+
+Audio files are stored in the `audio` bucket via `/api/audio/upload`:
+
+```typescript
+const uploadForm = new FormData();
+uploadForm.append("file", audioBlob, "recording.webm");
+uploadForm.append("userId", userId);
+
+const uploadRes = await fetch("/api/audio/upload", {
+  method: "POST",
+  headers: { Authorization: `Bearer ${token}` },
+  body: uploadForm,
+});
+
+const { url: audioUrl } = await uploadRes.json();
+```
+
+**Storage structure:**
+```
+audio/
+  {userId}/
+    {storyId}-{timestamp}.webm
+```
+
+<Tip>
+  Audio files are stored separately from story records, allowing users to delete stories without losing the original recordings.
+</Tip>
+
+### File Format & Size
+
+- **Format**: WebM with Opus codec
+- **Typical size**: ~1 MB per minute (16kHz)
+- **Max duration**: No hard limit, but 10-minute recordings recommended
+- **Retention**: Permanent unless manually deleted
+
+## Draft Persistence
+
+### Session Recovery
+
+Unfinished recordings are saved to `sessionStorage` and restored on page reload:
+
+```typescript
+const DRAFT_KEY = "estory_record_draft";
+
+// Save draft every 500ms (debounced)
+useEffect(() => {
+  const timer = setTimeout(() => {
+    sessionStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ transcribedText, entryTitle, storyDate, isPublic })
+    );
+  }, 500);
+  return () => clearTimeout(timer);
+}, [transcribedText, entryTitle, storyDate, isPublic]);
+```
+
+**Restored on mount:**
+- Transcribed text
+- Entry title
+- Story date
+- Public/private setting
+
+<Info>
+  Drafts are automatically cleared after successful save. They persist only during the active browser session.
+</Info>
+
+## User Experience Features
+
+### Recording Tips
+
+The UI displays contextual tips to improve recording quality:
+
+<AccordionGroup>
+  <Accordion title="Speak clearly and moderately">
+    Avoid shouting or whispering. Natural conversation pace works best.
+  </Accordion>
+  
+  <Accordion title="Find a quiet environment">
+    Background noise degrades transcription accuracy. Use headphones if possible.
+  </Accordion>
+  
+  <Accordion title="You can edit the text before saving">
+    Transcription isn't perfect. Review and correct any errors inline.
+  </Accordion>
+  
+  <Accordion title="Stories saved securely on blockchain">
+    Every story is hashed to IPFS for permanent, tamper-proof storage.
+  </Accordion>
+</AccordionGroup>
+
+### Visual Feedback
+
+- **Pulsing ring animation** - 3 concentric rings expand/fade during recording
+- **Live timer** - Updates every second with MM:SS format
+- **Audio badge** - Green "Audio Captured" badge after successful recording
+- **Transcribing badge** - Purple spinner badge during AI processing
+
+## Integration Points
+
+### Related Features
+
+<CardGroup cols={2}>
+  <Card title="AI Analysis" icon="brain" href="/features/ai-analysis">
+    Transcribed text is automatically analyzed for themes and emotions
+  </Card>
+  
+  <Card title="IPFS Storage" icon="globe" href="/features/blockchain-storage">
+    Audio URLs are included in the IPFS metadata for each story
+  </Card>
+  
+  <Card title="Local Vault" icon="lock" href="/features/local-vault">
+    Audio blobs can be encrypted and stored locally in IndexedDB
+  </Card>
+</CardGroup>
+
+## Implementation Reference
+
+**Source files:**
+- `app/record/RecordPageClient.tsx:140-241` - Recording and transcription logic
+- `app/api/ai/transcribe/route.ts` - ElevenLabs API integration
+- `app/api/audio/upload/route.ts` - Supabase storage upload
+
+**Key dependencies:**
+- `navigator.mediaDevices.getUserMedia` - Browser audio capture
+- `MediaRecorder` API - Audio blob creation
+- ElevenLabs Scribe API - Transcription service
+- Supabase Storage - Audio file hosting

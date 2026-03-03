@@ -1,0 +1,258 @@
+---
+title: "eStoryToken (ERC20)"
+description: "The $ESTORY utility token powering the eStory ecosystem"
+---
+
+## Overview
+
+The **eStoryToken** is an ERC20 utility token that serves as the primary medium of exchange within the eStory ecosystem. Users earn $ESTORY through platform engagement (likes, streaks, reading) and can spend it to tip creators or unlock paywalled content.
+
+**Contract Address (Base Sepolia):** `0xf9eDD76B...`
+
+## Token Details
+
+<ParamField path="name" type="string">
+  eStoryToken
+</ParamField>
+
+<ParamField path="symbol" type="string">
+  ESTORY
+</ParamField>
+
+<ParamField path="decimals" type="uint8">
+  18
+</ParamField>
+
+<ParamField path="MAX_SUPPLY" type="uint256">
+  100,000,000 tokens (100M * 10^18 in wei)
+</ParamField>
+
+<ParamField path="Initial Supply" type="uint256">
+  1,000,000 tokens minted to admin at deployment for liquidity/rewards pool
+</ParamField>
+
+## Features
+
+### ERC20 Standard
+Full compliance with the ERC20 token standard, including:
+- `transfer()` and `transferFrom()` for token movements
+- `approve()` and `allowance()` for delegation
+- Standard events: `Transfer`, `Approval`
+
+### ERC20Burnable
+Token holders can permanently destroy their tokens using:
+- `burn(uint256 amount)` - Burn your own tokens
+- `burnFrom(address account, uint256 amount)` - Burn tokens from an approved account
+
+### ERC20Permit (EIP-2612)
+Gasless approvals via off-chain signatures:
+- `permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)` - Approve spending via signature instead of a transaction
+- Eliminates the need for a separate approval transaction before transfers
+
+### Role-Based Access Control
+
+<ParamField path="DEFAULT_ADMIN_ROLE" type="bytes32">
+  Manages all roles, can grant/revoke MINTER_ROLE and PAUSER_ROLE
+</ParamField>
+
+<ParamField path="MINTER_ROLE" type="bytes32">
+  Can mint new tokens (up to MAX_SUPPLY). Typically granted to the backend service to reward users for off-chain activity.
+</ParamField>
+
+<ParamField path="PAUSER_ROLE" type="bytes32">
+  Can pause/unpause token transfers in emergency situations
+</ParamField>
+
+### Pausable
+Token transfers can be paused by PAUSER_ROLE holders in emergency situations (e.g., security incident, contract upgrade).
+
+## Constructor
+
+```solidity
+constructor(address initialAdmin)
+```
+
+<ParamField path="initialAdmin" type="address">
+  Receives all three roles (DEFAULT_ADMIN_ROLE, MINTER_ROLE, PAUSER_ROLE) and the initial supply of 1M tokens
+</ParamField>
+
+## Functions
+
+<Accordion title="mint(address to, uint256 amount)">
+  Mints new tokens to a specified address. Only callable by MINTER_ROLE holders when the contract is not paused.
+
+  **Access:** `onlyRole(MINTER_ROLE)`, `whenNotPaused`
+
+  **Parameters:**
+  - `to` (address) - Recipient address
+  - `amount` (uint256) - Amount to mint (in wei, e.g., 1 token = 1e18)
+
+  **Requirements:**
+  - `totalSupply() + amount <= MAX_SUPPLY` - Cannot exceed 100M token cap
+  - Contract must not be paused
+  - Caller must have MINTER_ROLE
+
+  ```solidity
+  function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) whenNotPaused {
+      require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+      _mint(to, amount);
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  // Backend minting 100 tokens as reward
+  const amount = ethers.parseEther("100"); // 100 * 10^18
+  await eStoryToken.mint(userAddress, amount);
+  ```
+</Accordion>
+
+<Accordion title="pause()">
+  Pauses all token transfers. Only callable by PAUSER_ROLE holders.
+
+  **Access:** `onlyRole(PAUSER_ROLE)`
+
+  **Effects:**
+  - All `transfer()`, `transferFrom()`, and `mint()` calls will revert
+  - Approval operations still work
+
+  ```solidity
+  function pause() external onlyRole(PAUSER_ROLE) {
+      _pause();
+  }
+  ```
+</Accordion>
+
+<Accordion title="unpause()">
+  Unpauses token transfers. Only callable by PAUSER_ROLE holders.
+
+  **Access:** `onlyRole(PAUSER_ROLE)`
+
+  ```solidity
+  function unpause() external onlyRole(PAUSER_ROLE) {
+      _unpause();
+  }
+  ```
+</Accordion>
+
+<Accordion title="_update(address from, address to, uint256 value)">
+  Internal hook that enforces pause state on all transfers. Automatically called by OpenZeppelin's ERC20 implementation.
+
+  **Visibility:** `internal`
+
+  **Requirements:**
+  - Contract must not be paused
+
+  ```solidity
+  function _update(address from, address to, uint256 value) internal override(ERC20) {
+      require(!paused(), "Token transfer while paused");
+      super._update(from, to, value);
+  }
+  ```
+</Accordion>
+
+## Minting Mechanics
+
+### Backend Minting Flow
+1. User completes off-chain activity (e.g., 7-day streak, giving likes)
+2. Backend service (with MINTER_ROLE) calls `mint(userAddress, rewardAmount)`
+3. Transaction is submitted to Base Sepolia
+4. User receives tokens instantly in their wallet
+
+### Supply Cap Enforcement
+The contract enforces a hard cap of 100M tokens:
+```solidity
+require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+```
+Once 100M tokens are minted, no further minting is possible (deflationary if tokens are burned).
+
+## Security Considerations
+
+### Pause Mechanism
+- Use `pause()` only in emergencies (smart contract vulnerability, market manipulation)
+- Pausing prevents all transfers including `mint()`, but does not affect approvals
+- Always announce pause events to users and explain the reason
+
+### Role Management
+- **DEFAULT_ADMIN_ROLE** should be a multi-sig wallet or governance contract
+- **MINTER_ROLE** should be restricted to trusted backend services with rate limiting
+- **PAUSER_ROLE** should be held by security team members for rapid response
+
+### Reentrancy Protection
+ERC20 transfers are not vulnerable to reentrancy by design (no external calls during transfer). The contract does not hold ETH or interact with untrusted contracts.
+
+## Integration Examples
+
+### Frontend: Check Balance
+```typescript
+import { useEStoryToken } from '@/app/hooks/useEStoryToken';
+
+function MyComponent() {
+  const { balance, isLoading } = useEStoryToken();
+  
+  return (
+    <div>
+      Your balance: {balance ? ethers.formatEther(balance) : '0'} ESTORY
+    </div>
+  );
+}
+```
+
+### Frontend: Approve StoryProtocol for Tipping
+```typescript
+import { useEStoryToken } from '@/app/hooks/useEStoryToken';
+import { STORY_PROTOCOL_ADDRESS } from '@/lib/contracts';
+
+function TipButton() {
+  const { approve } = useEStoryToken();
+  
+  const handleApprove = async () => {
+    const amount = ethers.parseEther("100"); // Approve 100 tokens
+    await approve(STORY_PROTOCOL_ADDRESS, amount);
+  };
+  
+  return <button onClick={handleApprove}>Approve for Tipping</button>;
+}
+```
+
+### Backend: Mint Rewards
+```typescript
+import { ethers } from 'ethers';
+import { ESTORY_TOKEN_ADDRESS, ESTORY_TOKEN_ABI } from '@/lib/contracts';
+
+const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC);
+const signer = new ethers.Wallet(process.env.MINTER_PRIVATE_KEY, provider);
+const token = new ethers.Contract(ESTORY_TOKEN_ADDRESS, ESTORY_TOKEN_ABI, signer);
+
+// Reward user for 7-day streak
+const rewardAmount = ethers.parseEther("50"); // 50 tokens
+const tx = await token.mint(userWalletAddress, rewardAmount);
+await tx.wait();
+console.log('Minted 50 ESTORY to', userWalletAddress);
+```
+
+## Source Code
+
+View the full contract implementation:
+`/workspace/source/contracts/iStoryToken.sol:1`
+
+```solidity
+contract EStoryToken is ERC20, ERC20Burnable, ERC20Permit, AccessControl, Pausable {
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+
+    uint256 public constant MAX_SUPPLY = 100_000_000 * 10 ** 18; // 100M tokens
+
+    constructor(address initialAdmin)
+        ERC20("eStoryToken", "ESTORY")
+        ERC20Permit("eStoryToken")
+    {
+        _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
+        _grantRole(MINTER_ROLE, initialAdmin);
+        _grantRole(PAUSER_ROLE, initialAdmin);
+
+        // Initial supply to admin for liquidity/rewards pool
+        _mint(initialAdmin, 1_000_000 * 10 ** decimals());
+    }
+}
+```

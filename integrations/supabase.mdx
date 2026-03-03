@@ -1,0 +1,569 @@
+---
+title: "Supabase Backend Integration"
+description: "PostgreSQL database, authentication, storage, and Row Level Security for eStory"
+---
+
+## Overview
+
+Supabase provides eStory's complete backend infrastructure:
+
+- **PostgreSQL Database**: Stories, users, metadata, books, habits
+- **Authentication**: OAuth (Google) + wallet signature verification
+- **Storage**: Audio files, profile images, book covers
+- **Row Level Security (RLS)**: Privacy enforcement at the database level
+- **Real-time**: Live notifications and updates (via polling)
+
+## Client Variants
+
+Supabase clients are initialized differently based on execution context:
+
+### Browser Client (Client Components)
+
+**File**: `/app/utils/supabase/supabaseClient.ts`  
+**Use Case**: Client-side components, browser-only operations
+
+```typescript
+import { createClient } from "@supabase/supabase-js";
+
+const createSupabaseClient = () => {
+  if (typeof window === "undefined") {
+    return null; // Server-side guard
+  }
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      auth: {
+        autoRefreshToken: true,
+        persistSession: true,
+        detectSessionInUrl: true,
+        storage: window.localStorage, // Browser-only
+      },
+    }
+  );
+};
+
+export const supabaseClient = 
+  typeof window !== "undefined" ? createSupabaseClient() : null;
+```
+
+**Usage**:
+```typescript
+import { supabaseClient } from "@/app/utils/supabase/supabaseClient";
+
+const { data, error } = await supabaseClient
+  .from("stories")
+  .select("*")
+  .eq("author_id", userId);
+```
+
+<Note>
+`supabaseClient` is a **singleton** initialized once at module load. It's SSR-safe via the `typeof window` check.
+</Note>
+
+### Server Client (API Routes, SSR)
+
+**File**: `/app/utils/supabase/supabaseServer.ts`  
+**Use Case**: API routes, server components, SSR pages
+
+```typescript
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
+
+export const createSupabaseServerClient = async () => {
+  const cookieStore = await cookies();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll().map(({ name, value }) => ({ name, value }));
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set({ name, value, ...options });
+          });
+        },
+      },
+    }
+  );
+};
+```
+
+**Usage**:
+```typescript
+import { createSupabaseServerClient } from "@/app/utils/supabase/supabaseServer";
+
+export async function GET(req: NextRequest) {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.from("stories").select("*");
+  // ...
+}
+```
+
+<Info>
+The server client **reads session from cookies**, enabling seamless SSR authentication.
+</Info>
+
+### Admin Client (Privileged Operations)
+
+**File**: `/app/utils/supabase/supabaseAdmin.ts`  
+**Use Case**: Bypassing RLS, admin operations, background jobs
+
+```typescript
+import { createClient } from "@supabase/supabase-js";
+
+export const createSupabaseAdminClient = () => {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!, // Service role key
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    }
+  );
+};
+```
+
+**Usage**:
+```typescript
+import { createSupabaseAdminClient } from "@/app/utils/supabase/supabaseAdmin";
+
+const supabase = createSupabaseAdminClient();
+const { data } = await supabase
+  .from("stories")
+  .select("*") // Bypasses RLS
+  .eq("is_public", true);
+```
+
+<Note>
+**CRITICAL**: The admin client bypasses Row Level Security. Only use it when absolutely necessary and always validate permissions in application code.
+</Note>
+
+## Database Schema
+
+For the full schema, see `docs/DATABASE_SCHEMA.md`. Key tables:
+
+### stories
+
+```sql
+CREATE TABLE stories (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  audio_url TEXT,
+  ipfs_hash TEXT,
+  is_public BOOLEAN DEFAULT false,
+  is_canonical BOOLEAN DEFAULT false, -- "Important" stories
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### users
+
+```sql
+CREATE TABLE users (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  wallet_address TEXT UNIQUE,
+  email TEXT UNIQUE,
+  username TEXT UNIQUE,
+  bio TEXT,
+  profile_image_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### story_metadata
+
+```sql
+CREATE TABLE story_metadata (
+  story_id UUID PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  themes TEXT[],
+  emotional_tone TEXT,
+  life_domain TEXT,
+  intensity_score FLOAT,
+  significance_score FLOAT,
+  people_mentioned TEXT[],
+  places_mentioned TEXT[],
+  time_references TEXT[],
+  brief_insight TEXT,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### Storage Buckets
+
+| Bucket | Content | Public? |
+|--------|---------|--------|
+| `audio-recordings` | Voice recordings | Private (signed URLs) |
+| `profile-images` | User avatars | Public |
+| `book-covers` | NFT book covers | Public |
+
+## Row Level Security (RLS)
+
+RLS policies enforce privacy at the database level, even if application code is compromised.
+
+### Example: stories Table
+
+```sql
+-- Users can read their own stories
+CREATE POLICY "Users can view own stories"
+ON stories FOR SELECT
+USING (auth.uid() = author_id);
+
+-- Everyone can read public stories
+CREATE POLICY "Public stories are viewable by all"
+ON stories FOR SELECT
+USING (is_public = true);
+
+-- Users can insert their own stories
+CREATE POLICY "Users can insert own stories"
+ON stories FOR INSERT
+WITH CHECK (auth.uid() = author_id);
+
+-- Users can update their own stories
+CREATE POLICY "Users can update own stories"
+ON stories FOR UPDATE
+USING (auth.uid() = author_id)
+WITH CHECK (auth.uid() = author_id);
+
+-- Users can delete their own stories
+CREATE POLICY "Users can delete own stories"
+ON stories FOR DELETE
+USING (auth.uid() = author_id);
+```
+
+<Info>
+RLS policies are the **final line of defense**. Always enable RLS on tables containing user data.
+</Info>
+
+## Authentication
+
+eStory supports two authentication methods:
+
+### 1. Wallet Signature (Web3)
+
+**Flow**:
+1. User connects wallet via RainbowKit
+2. Client fetches nonce: `GET /api/auth/nonce?address=0x...`
+3. User signs nonce message (UUID + timestamp)
+4. Client sends signature: `POST /api/auth/login`
+5. Server verifies signature and nonce (one-time use, 5-min expiry)
+6. Server returns Supabase JWT
+7. AuthProvider stores JWT in localStorage
+
+**Nonce Structure**:
+```typescript
+const message = `Sign this message to authenticate with eStory.
+
+Nonce: ${nonce}
+Timestamp: ${timestamp}`;
+```
+
+### 2. Google OAuth
+
+**Flow**:
+1. User clicks "Sign in with Google"
+2. Redirect to Google OAuth
+3. Callback to `/api/auth/callback` (validates URL against whitelist)
+4. Supabase handles session creation
+5. AuthProvider picks up session from cookies
+
+### Session Management
+
+Sessions are stored in:
+- **Browser**: `localStorage` (managed by Supabase SDK)
+- **Server**: Cookies (via `createServerClient`)
+
+**Auto-refresh**: Enabled by default (60-min token lifetime, refreshed at 50 min)
+
+## Storage
+
+### Upload Audio File
+
+```typescript
+const { data, error } = await supabaseClient.storage
+  .from('audio-recordings')
+  .upload(`${userId}/${storyId}.webm`, audioBlob, {
+    contentType: 'audio/webm',
+    upsert: false,
+  });
+
+if (data) {
+  const audioUrl = supabaseClient.storage
+    .from('audio-recordings')
+    .getPublicUrl(data.path).data.publicUrl;
+}
+```
+
+### Signed URLs (Private Files)
+
+```typescript
+const { data } = await supabaseClient.storage
+  .from('audio-recordings')
+  .createSignedUrl(`${userId}/${storyId}.webm`, 3600); // 1 hour
+
+const signedUrl = data.signedUrl;
+```
+
+### Upload Profile Image
+
+```typescript
+const { data, error } = await supabaseClient.storage
+  .from('profile-images')
+  .upload(`${userId}/avatar.jpg`, imageFile, {
+    contentType: 'image/jpeg',
+    upsert: true, // Replace existing
+  });
+```
+
+## Real-Time Updates (Polling)
+
+eStory uses polling for live updates instead of Supabase Realtime (for cost optimization).
+
+### Example: Notifications Polling
+
+```typescript
+import { useNotifications } from '@/app/hooks/useNotifications';
+
+function NotificationBell() {
+  const { notifications, unreadCount, markAsRead } = useNotifications();
+  
+  // Polls every 30 seconds
+  return (
+    <div>
+      <span>{unreadCount}</span>
+      {notifications.map(n => (
+        <div key={n.id} onClick={() => markAsRead(n.id)}>
+          {n.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+**Hook Implementation**:
+```typescript
+export function useNotifications() {
+  const [notifications, setNotifications] = useState([]);
+  
+  useEffect(() => {
+    const fetchNotifications = async () => {
+      const { data } = await supabaseClient
+        .from('notifications')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      setNotifications(data || []);
+    };
+    
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 30000); // 30s
+    return () => clearInterval(interval);
+  }, [userId]);
+  
+  return { notifications, unreadCount: notifications.filter(n => !n.is_read).length };
+}
+```
+
+## Error Handling
+
+### Common Error Patterns
+
+#### 409 Conflict (Duplicate Key)
+
+```typescript
+const { data, error } = await supabase.from('users').insert({ wallet_address });
+
+if (error?.code === '23505') {
+  // Unique constraint violation
+  return NextResponse.json({ error: 'Wallet already registered' }, { status: 409 });
+}
+```
+
+#### 403 Forbidden (RLS Policy Violation)
+
+```typescript
+if (error?.code === '42501' || error?.message?.includes('row-level security')) {
+  return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+}
+```
+
+#### 404 Not Found
+
+```typescript
+const { data, error } = await supabase
+  .from('stories')
+  .select('*')
+  .eq('id', storyId)
+  .single();
+
+if (!data) {
+  return NextResponse.json({ error: 'Story not found' }, { status: 404 });
+}
+```
+
+## Migrations
+
+Database migrations are managed manually via Supabase SQL Editor.
+
+**Example Migration** (add `story_metadata` table):
+
+```sql
+-- Migration: Add story_metadata table
+-- Run in Supabase SQL Editor
+
+CREATE TABLE IF NOT EXISTS story_metadata (
+  story_id UUID PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+  themes TEXT[] DEFAULT '{}',
+  emotional_tone TEXT,
+  life_domain TEXT,
+  intensity_score FLOAT,
+  significance_score FLOAT,
+  people_mentioned TEXT[] DEFAULT '{}',
+  places_mentioned TEXT[] DEFAULT '{}',
+  time_references TEXT[] DEFAULT '{}',
+  brief_insight TEXT,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Enable RLS
+ALTER TABLE story_metadata ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Users can view metadata for stories they can view
+CREATE POLICY "Users can view story metadata"
+ON story_metadata FOR SELECT
+USING (
+  EXISTS (
+    SELECT 1 FROM stories
+    WHERE stories.id = story_metadata.story_id
+    AND (stories.author_id = auth.uid() OR stories.is_public = true)
+  )
+);
+```
+
+<Note>
+Always run migrations in a transaction and test on a staging database first.
+</Note>
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# .env.local
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... # Admin only
+```
+
+<Info>
+`SUPABASE_SERVICE_ROLE_KEY` must **never** be exposed to the client. Only use it in server-side code.
+</Info>
+
+## Best Practices
+
+### 1. Always Validate Ownership
+
+Even with RLS, validate ownership in API routes:
+
+```typescript
+const { data: story } = await supabase
+  .from('stories')
+  .select('author_id')
+  .eq('id', storyId)
+  .single();
+
+if (story.author_id !== authenticatedUserId) {
+  return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+}
+```
+
+### 2. Use Admin Client Sparingly
+
+Only use `createSupabaseAdminClient` for:
+- Public data aggregation (e.g., sitemap generation)
+- Background jobs (e.g., cleanup tasks)
+- Operations that explicitly require bypassing RLS
+
+### 3. Never Initialize Clients at Module Scope
+
+Bad:
+```typescript
+const supabase = createSupabaseAdminClient(); // Fails at build time
+
+export async function GET() {
+  const { data } = await supabase.from('stories').select('*');
+}
+```
+
+Good:
+```typescript
+export async function GET() {
+  const supabase = createSupabaseAdminClient(); // Lazy init
+  const { data } = await supabase.from('stories').select('*');
+}
+```
+
+### 4. Use Transactions for Multi-Step Operations
+
+```typescript
+const { data, error } = await supabase.rpc('create_story_with_metadata', {
+  p_title: title,
+  p_content: content,
+  p_themes: themes,
+});
+```
+
+## Testing
+
+### Manual Testing (Supabase Dashboard)
+
+1. Navigate to **Table Editor** → Select table
+2. Use **SQL Editor** to run queries
+3. Check **Database** → **Roles** → Test RLS policies
+
+### Unit Tests (Mock Supabase)
+
+```typescript
+vi.mock('@/app/utils/supabase/supabaseClient', () => ({
+  supabaseClient: {
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => Promise.resolve({ data: mockStories, error: null })),
+      })),
+    })),
+  },
+}));
+```
+
+## Troubleshooting
+
+### RLS Policy Errors
+
+**Symptom**: `403 Forbidden` or empty results  
+**Solution**: Check RLS policies in Supabase Dashboard → Authentication → Policies
+
+### Session Expired
+
+**Symptom**: `401 Unauthorized` after idle time  
+**Solution**: Refresh token manually or sign out/sign in
+
+### Storage Upload Failures
+
+**Symptom**: `500 Internal Server Error` on upload  
+**Solution**: Check bucket exists, RLS policies allow upload, file size limits
+
+## References
+
+- [Supabase Documentation](https://supabase.com/docs)
+- [Database Schema](/architecture/database-schema)
+- [API Reference](/api/introduction)
+- [Architecture: Services](/architecture/services)

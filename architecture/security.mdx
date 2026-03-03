@@ -1,0 +1,756 @@
+---
+title: Security Architecture
+description: Comprehensive security model covering authentication, encryption, API protection, and smart contract security
+---
+
+# Security Architecture
+
+eStory implements a multi-layered security architecture to protect user data, API resources, and blockchain assets. The security model spans 5 layers plus client-side encryption.
+
+## 5-Layer Security Model
+
+All API routes are protected by a layered defense-in-depth strategy:
+
+```plaintext
+Layer 4: Ownership Verification — User can only modify their own resources
+Layer 3: Input Validation — File size, MIME type, text length limits
+Layer 2: Bearer Token Auth — validateAuthOrReject() via lib/auth.ts
+Layer 1: Rate Limiting — middleware.ts (AI=10/min, Auth=20/min)
+Layer 0: Security Headers — CSP, X-Frame-Options, CORS via next.config
+Client: Local Vault — AES-256-GCM encryption at rest in IndexedDB
+```
+
+### Layer 0: Security Headers
+
+<Accordion title="Content Security Policy (CSP)" icon="shield-check">
+  Restricts resource loading origins to prevent XSS attacks.
+  
+  ```javascript
+  // next.config.mjs
+  headers: [
+    {
+      source: '/:path*',
+      headers: [
+        {
+          key: 'Content-Security-Policy',
+          value: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; ..."
+        }
+      ]
+    }
+  ]
+  ```
+  
+  **Configured in:** `next.config.mjs`
+</Accordion>
+
+<Accordion title="X-Frame-Options" icon="frame">
+  Prevents clickjacking by blocking iframe embedding.
+  
+  ```plaintext
+  X-Frame-Options: DENY
+  ```
+  
+  **Purpose:** Blocks the app from being embedded in malicious iframes
+</Accordion>
+
+<Accordion title="X-Content-Type-Options" icon="file-check">
+  Prevents MIME type sniffing attacks.
+  
+  ```plaintext
+  X-Content-Type-Options: nosniff
+  ```
+  
+  **Purpose:** Forces browsers to respect declared Content-Type headers
+</Accordion>
+
+<Accordion title="Referrer-Policy" icon="link">
+  Controls referrer information sent in requests.
+  
+  ```plaintext
+  Referrer-Policy: origin-when-cross-origin
+  ```
+  
+  **Purpose:** Limits referrer leakage to cross-origin requests
+</Accordion>
+
+### Layer 1: Rate Limiting
+
+<Accordion title="Middleware Rate Limiter" icon="gauge">
+  In-memory rate limiting with route-specific limits.
+  
+  **Implementation:** `middleware.ts`
+  
+  **Rate Limits:**
+  | Route Pattern | Limit | Window |
+  |---------------|-------|--------|
+  | `/api/ai/*` | 10 requests | 1 minute |
+  | `/api/auth/*` | 20 requests | 1 minute |
+  | `/api/cron/*` | 5 requests | 1 minute |
+  | All other routes | 60 requests | 1 minute |
+  
+  **Algorithm:** Token bucket per IP address
+  
+  <Note>
+    In production, consider migrating to Redis-based rate limiting (e.g., Upstash) for distributed environments.
+  </Note>
+</Accordion>
+
+### Layer 2: Bearer Token Authentication
+
+<Accordion title="validateAuthOrReject() Middleware" icon="key">
+  All authenticated API routes use `lib/auth.ts` for token validation.
+  
+  **Supported Token Types:**
+  1. **Supabase JWT** — Google OAuth users
+  2. **Custom Wallet JWT** — Wallet-authenticated users (signed by server)
+  
+  **Usage Pattern:**
+  ```typescript
+  // app/api/journal/save/route.ts
+  import { validateAuthOrReject, isAuthError } from "@/lib/auth";
+  
+  export async function POST(req: NextRequest) {
+    const authResult = await validateAuthOrReject(req);
+    if (isAuthError(authResult)) return authResult; // 401 response
+    const authenticatedUserId = authResult;
+    
+    // ... route logic with authenticated userId
+  }
+  ```
+  
+  **Implementation:** `lib/auth.ts:65-73`
+</Accordion>
+
+### Layer 3: Input Validation
+
+<CardGroup cols={2}>
+  <Card title="File Upload Validation" icon="file-upload">
+    **Enforced on:**
+    - `/api/ai/transcribe` (audio files)
+    - `/api/ipfs/upload` (IPFS uploads)
+    - `/api/audio/upload` (Supabase storage)
+    
+    **Checks:**
+    - Max file size: 25 MB (audio), 50 MB (IPFS)
+    - MIME type whitelist: `audio/*`, `image/*`, `application/json`
+    - Content validation before processing
+  </Card>
+  
+  <Card title="Text Input Validation" icon="text">
+    **Enforced on:**
+    - `/api/ai/enhance` (text enhancement)
+    - `/api/ai/analyze` (story analysis)
+    - `/api/journal/save` (story content)
+    
+    **Checks:**
+    - Max length: 50,000 characters
+    - Required fields validation
+    - Zod schema validation for complex inputs
+  </Card>
+</CardGroup>
+
+### Layer 4: Ownership Verification
+
+<Accordion title="Resource Ownership Checks" icon="user-check">
+  Routes that mutate user resources verify ownership before allowing operations.
+  
+  **Examples:**
+  
+  **Story Ownership:**
+  ```typescript
+  // app/api/ai/analyze/route.ts
+  const { data: story } = await supabase
+    .from('stories')
+    .select('author_wallet')
+    .eq('id', storyId)
+    .single();
+  
+  if (story.author_wallet !== authenticatedUserWallet) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  ```
+  
+  **Wallet Ownership:**
+  ```typescript
+  // lib/auth.ts:79-97
+  export async function validateWalletOwnership(
+    userId: string,
+    walletAddress: string
+  ): Promise<boolean> {
+    const { data } = await supabase
+      .from('users')
+      .select('wallet_address')
+      .eq('id', userId)
+      .single();
+    
+    return data?.wallet_address?.toLowerCase() === walletAddress.toLowerCase();
+  }
+  ```
+  
+  **Routes with Ownership Checks:**
+  - `/api/ai/analyze` — Verifies story ownership
+  - `/api/book/compile` — Verifies all stories belong to user
+  - `/api/habits` — Verifies habit records belong to user
+  - `/api/user/profile` — Only allows editing own profile
+</Accordion>
+
+## Authentication Architecture
+
+### Dual Authentication Flow
+
+eStory supports two authentication methods that can be linked:
+
+<CardGroup cols={2}>
+  <Card title="Google OAuth" icon="google">
+    **Provider:** Supabase Auth (OAuth 2.0)
+    
+    **Flow:**
+    1. User clicks "Sign in with Google"
+    2. Redirected to Google OAuth consent
+    3. Callback to `/api/auth/callback`
+    4. Supabase creates session JWT
+    5. AuthProvider stores token in localStorage
+    
+    **Token:** Supabase session JWT
+  </Card>
+  
+  <Card title="Wallet Signature" icon="wallet">
+    **Provider:** Custom nonce-based signing
+    
+    **Flow:**
+    1. User connects wallet via RainbowKit
+    2. Client fetches nonce: `GET /api/auth/nonce?address=0x...`
+    3. User signs message with nonce
+    4. Client sends signature: `POST /api/auth/login`
+    5. Server verifies signature via viem
+    6. Server issues custom JWT
+    
+    **Token:** Custom wallet JWT (signed by server)
+  </Card>
+</CardGroup>
+
+### Nonce-Based Wallet Authentication
+
+<Steps>
+  <Step title="Nonce Generation">
+    Server generates a cryptographically random nonce for each login attempt.
+    
+    ```typescript
+    // app/api/auth/nonce/route.ts
+    import { randomUUID } from 'crypto';
+    
+    const nonce = randomUUID();
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+    
+    // Store in database: nonces table
+    await supabase.from('nonces').insert({
+      wallet_address: address.toLowerCase(),
+      nonce,
+      expires_at: new Date(expiresAt).toISOString(),
+      used: false
+    });
+    ```
+  </Step>
+  
+  <Step title="Client Signature">
+    User signs a message containing the nonce and timestamp.
+    
+    ```typescript
+    // Client-side (AuthProvider.tsx)
+    const message = `Sign in to eStory\n\nNonce: ${nonce}\nTimestamp: ${timestamp}`;
+    const signature = await signMessageAsync({ message });
+    ```
+  </Step>
+  
+  <Step title="Server Verification">
+    Server verifies the signature and nonce validity.
+    
+    ```typescript
+    // app/api/auth/login/route.ts
+    import { verifyMessage } from 'viem';
+    
+    const isValid = await verifyMessage({
+      address: walletAddress,
+      message,
+      signature
+    });
+    
+    // Verify nonce is unused and not expired
+    const { data: nonceRecord } = await supabase
+      .from('nonces')
+      .select('*')
+      .eq('wallet_address', walletAddress.toLowerCase())
+      .eq('nonce', nonce)
+      .eq('used', false)
+      .single();
+    
+    if (!nonceRecord || new Date() > new Date(nonceRecord.expires_at)) {
+      return NextResponse.json({ error: "Invalid or expired nonce" }, { status: 401 });
+    }
+    
+    // Mark nonce as used
+    await supabase.from('nonces').update({ used: true }).eq('id', nonceRecord.id);
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  **Security Properties:**
+  - Each nonce is single-use (marked `used: true` after verification)
+  - Nonces expire after 5 minutes
+  - Signatures are tied to specific message content (nonce + timestamp)
+  - Prevents replay attacks and signature reuse
+</Warning>
+
+### Account Linking
+
+Users can link their Google account and wallet for unified access.
+
+<Accordion title="Wallet → Google Linking" icon="link">
+  **Flow:** User authenticated with wallet wants to link Google account.
+  
+  1. User initiates linking from Profile > Settings
+  2. `POST /api/auth/initiate-link` — Server generates HMAC-signed linking token
+  3. User redirected to Google OAuth with linking token in state
+  4. OAuth callback to `/api/auth/link-google`
+  5. Server verifies linking token and merges accounts
+  
+  **Security:** HMAC signature prevents token forgery
+</Accordion>
+
+<Accordion title="Google → Wallet Linking" icon="link">
+  **Flow:** User authenticated with Google wants to link wallet.
+  
+  1. User connects wallet via RainbowKit
+  2. User signs linking message with wallet
+  3. `POST /api/auth/link-account` — Server verifies signature and session
+  4. Server updates user record with wallet address
+  
+  **Security:** Requires both valid session and wallet signature
+</Accordion>
+
+## Client-Side Encryption (Local Vault)
+
+### Encryption Architecture
+
+The local vault uses a 3-layer key hierarchy:
+
+```plaintext
+PIN (user input)
+  → PBKDF2 (100K iterations, 16-byte salt)
+    → KEK (Key Encryption Key)
+      → AES-KW (wraps DEK)
+        → DEK (Data Encryption Key)
+          → AES-256-GCM (encrypts story data)
+```
+
+<CardGroup cols={3}>
+  <Card title="PIN" icon="lock">
+    **6-digit user PIN**
+    
+    - Never stored in plaintext
+    - Only PIN hash stored (SHA-256)
+    - Used to derive KEK via PBKDF2
+  </Card>
+  
+  <Card title="KEK" icon="key">
+    **Key Encryption Key**
+    
+    - Derived from PIN + salt
+    - PBKDF2 with 100,000 iterations
+    - Used to unwrap DEK via AES-KW
+    - Never stored, only held in memory
+  </Card>
+  
+  <Card title="DEK" icon="key">
+    **Data Encryption Key**
+    
+    - 256-bit AES key
+    - Generated once per vault setup
+    - Wrapped with KEK, stored in `vaultKeys` table
+    - Held in memory only while vault is unlocked
+  </Card>
+</CardGroup>
+
+### Encryption Flow
+
+<Steps>
+  <Step title="Vault Setup">
+    User creates vault with 6-digit PIN.
+    
+    ```typescript
+    // lib/vault/keyManager.ts:setupVault()
+    
+    // 1. Generate random 256-bit DEK
+    const dek = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
+    
+    // 2. Derive KEK from PIN
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const kek = await deriveKEK(pin, salt);
+    
+    // 3. Wrap DEK with KEK
+    const wrappedDEK = await crypto.subtle.wrapKey('raw', dek, kek, { name: 'AES-KW' });
+    
+    // 4. Store wrapped DEK and salt in IndexedDB
+    await db.vaultKeys.add({
+      userId,
+      salt: arrayBufferToBase64(salt),
+      wrapped_dek: arrayBufferToBase64(wrappedDEK),
+      pin_hash: await hashPIN(pin, salt),
+      created_at: new Date().toISOString()
+    });
+    ```
+  </Step>
+  
+  <Step title="Unlock Vault">
+    User enters PIN to unlock vault.
+    
+    ```typescript
+    // lib/vault/keyManager.ts:unlockVault()
+    
+    // 1. Retrieve salt and wrapped DEK from IndexedDB
+    const keyRecord = await db.vaultKeys.get(userId);
+    
+    // 2. Verify PIN hash
+    const pinHash = await hashPIN(pin, base64ToArrayBuffer(keyRecord.salt));
+    if (pinHash !== keyRecord.pin_hash) {
+      throw new Error('Invalid PIN');
+    }
+    
+    // 3. Derive KEK from PIN
+    const kek = await deriveKEK(pin, base64ToArrayBuffer(keyRecord.salt));
+    
+    // 4. Unwrap DEK
+    const dek = await crypto.subtle.unwrapKey(
+      'raw',
+      base64ToArrayBuffer(keyRecord.wrapped_dek),
+      kek,
+      { name: 'AES-KW' },
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
+    
+    // 5. Store DEK in memory (global Map)
+    setDEK(userId, dek);
+    ```
+  </Step>
+  
+  <Step title="Encrypt Story">
+    Story content is encrypted with DEK before saving to IndexedDB.
+    
+    ```typescript
+    // lib/vault/crypto.ts:encryptString()
+    
+    const dek = getDEK(userId);
+    if (!dek) throw new Error('Vault is locked');
+    
+    const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV
+    const encoder = new TextEncoder();
+    const plaintext = encoder.encode(text);
+    
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      dek,
+      plaintext
+    );
+    
+    return {
+      ciphertext,
+      iv
+    };
+    ```
+  </Step>
+  
+  <Step title="Lock Vault">
+    DEK is cleared from memory when vault is locked.
+    
+    ```typescript
+    // lib/vault/keyManager.ts:clearAllKeys()
+    
+    // Remove DEK from in-memory Map
+    dekStore.clear();
+    
+    // Called on:
+    // - User manual lock
+    // - Sign-out (AuthProvider.tsx)
+    // - Session expiry
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  **Key Security Properties:**
+  - DEK never leaves browser memory unencrypted
+  - PIN is never stored or transmitted
+  - Each encrypted field has unique IV (Initialization Vector)
+  - Integrity verified via SHA-256 checksum
+  - All vault operations are browser-only (never imported in API routes)
+</Note>
+
+## Database Security (Supabase RLS)
+
+### Row Level Security Policies
+
+Supabase enforces access control via PostgreSQL Row Level Security (RLS).
+
+<Accordion title="users Table" icon="user">
+  **Policies:**
+  - Users can read their own record
+  - Users can update their own `name`, `bio`, `avatar` only
+  - Admin client bypasses RLS for account linking operations
+  
+  **Protected Fields:**
+  - `google_id`, `google_email`, `google_avatar` — OAuth data
+  - `wallet_address` — Blockchain identity
+  - `auth_provider` — Authentication method
+  
+  <Warning>
+    Admin client (`supabaseAdmin.ts`) bypasses RLS. Use sparingly and always add explicit authorization checks in API routes.
+  </Warning>
+</Accordion>
+
+<Accordion title="stories Table" icon="book">
+  **Policies:**
+  - Public stories: readable by anyone
+  - Private stories: readable only by author
+  - All stories: only author can update/delete
+  - Only authenticated users can insert stories
+  
+  **Implementation:**
+  ```sql
+  -- Read policy
+  CREATE POLICY "Users can read own stories or public stories"
+  ON stories FOR SELECT
+  USING (
+    auth.uid() = author_wallet OR is_public = true
+  );
+  
+  -- Write policy
+  CREATE POLICY "Users can only modify own stories"
+  ON stories FOR UPDATE
+  USING (auth.uid() = author_wallet);
+  ```
+</Accordion>
+
+<Accordion title="story_metadata Table" icon="file-text">
+  **Policies:**
+  - Metadata visible only if story is visible (inherits story policies)
+  - Only author or system can write metadata
+  - AI analysis endpoint verifies story ownership before writing
+  
+  **Foreign Key:** `story_id` references `stories(id)` with `ON DELETE CASCADE`
+</Accordion>
+
+## Smart Contract Security
+
+### OpenZeppelin Patterns
+
+All three contracts (`eStoryToken`, `StoryProtocol`, `StoryNFT`) use audited OpenZeppelin libraries:
+
+<CardGroup cols={3}>
+  <Card title="AccessControl" icon="shield-check">
+    Role-based permissions
+    
+    - `DEFAULT_ADMIN_ROLE`
+    - `MINTER_ROLE`
+    - `PAUSER_ROLE`
+    
+    Prevents unauthorized minting and pausing
+  </Card>
+  
+  <Card title="Pausable" icon="pause">
+    Emergency stop mechanism
+    
+    - Freezes all transfers
+    - Only `PAUSER_ROLE` can trigger
+    - Used for incident response
+  </Card>
+  
+  <Card title="ReentrancyGuard" icon="shield">
+    Prevents reentrancy attacks
+    
+    - Applied to all external functions
+    - Blocks recursive calls
+    - Critical for token transfers
+  </Card>
+</CardGroup>
+
+### Contract-Specific Security
+
+<Accordion title="eStoryToken.sol" icon="coin">
+  **Security Features:**
+  - `MAX_SUPPLY` cap: 100,000,000 tokens (prevents infinite inflation)
+  - Only `MINTER_ROLE` can mint tokens
+  - Only `PAUSER_ROLE` can pause transfers
+  - ERC20 standard compliance
+  
+  ```solidity
+  uint256 public constant MAX_SUPPLY = 100_000_000 * 10**18;
+  
+  function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE) {
+      require(totalSupply() + amount <= MAX_SUPPLY, "Max supply exceeded");
+      _mint(to, amount);
+  }
+  ```
+</Accordion>
+
+<Accordion title="StoryNFT.sol" icon="image">
+  **Security Features:**
+  - Mint fee: 0.001 ETH (prevents spam)
+  - ERC2981 royalties (5% creator royalties)
+  - Safe withdrawal pattern for collected fees
+  - Only owner can update mint fee
+  
+  ```solidity
+  uint256 public mintFee = 0.001 ether;
+  
+  function mintBook(string memory metadataURI) external payable {
+      require(msg.value >= mintFee, "Insufficient mint fee");
+      // ... mint logic
+  }
+  
+  function withdraw() external onlyRole(DEFAULT_ADMIN_ROLE) {
+      payable(msg.sender).transfer(address(this).balance);
+  }
+  ```
+</Accordion>
+
+<Accordion title="StoryProtocol.sol" icon="coins">
+  **Security Features:**
+  - SafeERC20 for all token transfers (prevents silent failures)
+  - Pausable for emergency stops
+  - Only owner can update protocol parameters
+  - Reentrancy protection on tips and paywall purchases
+  
+  ```solidity
+  using SafeERC20 for IERC20;
+  
+  function tipCreator(address creator, uint256 amount) external nonReentrant whenNotPaused {
+      require(amount > 0, "Tip must be > 0");
+      storyToken.safeTransferFrom(msg.sender, creator, amount);
+      emit TipSent(msg.sender, creator, amount);
+  }
+  ```
+</Accordion>
+
+## Error Sanitization
+
+<Warning>
+  **Never leak internal error details to clients.** All API routes follow a strict error response pattern.
+</Warning>
+
+### Error Response Pattern
+
+```typescript
+// ✅ CORRECT: Generic error message
+try {
+  // ... operation
+} catch (err) {
+  console.error("[ROUTE_NAME] Error:", err); // Log full error server-side
+  return NextResponse.json(
+    { error: "Internal server error" },
+    { status: 500 }
+  );
+}
+
+// ❌ WRONG: Leaks internal details
+catch (err) {
+  return NextResponse.json(
+    { error: err.message }, // Might expose database schemas, file paths, etc.
+    { status: 500 }
+  );
+}
+```
+
+### Timing-Safe Secret Comparison
+
+Cron and admin endpoints use constant-time comparison to prevent timing attacks.
+
+```typescript
+// lib/crypto.ts
+import { timingSafeEqual } from 'crypto';
+
+export function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  
+  return timingSafeEqual(bufA, bufB);
+}
+
+// Usage in API routes
+import { safeCompare } from '@/lib/crypto';
+
+const authHeader = request.headers.get('Authorization');
+const expectedAuth = `Bearer ${process.env.CRON_SECRET}`;
+
+if (!safeCompare(authHeader || '', expectedAuth)) {
+  return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+}
+```
+
+## Security Checklist for New Features
+
+<Steps>
+  <Step title="API Route">
+    - [ ] Add `validateAuthOrReject` from `lib/auth.ts`
+    - [ ] Verify ownership for resource mutations
+    - [ ] Validate input (length, type, format)
+    - [ ] Use generic error messages (never `error.message`)
+    - [ ] Add rate limiting if needed
+  </Step>
+  
+  <Step title="Database Schema">
+    - [ ] Add RLS policies (SELECT, INSERT, UPDATE, DELETE)
+    - [ ] Test policies with non-owner users
+    - [ ] Add unique constraints where needed
+    - [ ] Use `ON DELETE CASCADE` for foreign keys
+  </Step>
+  
+  <Step title="Smart Contract">
+    - [ ] Use OpenZeppelin audited libraries
+    - [ ] Add `nonReentrant` to external functions
+    - [ ] Add `whenNotPaused` for critical operations
+    - [ ] Use `SafeERC20` for token transfers
+    - [ ] Set supply caps or rate limits
+  </Step>
+  
+  <Step title="Frontend">
+    - [ ] Sanitize user-generated content before rendering
+    - [ ] Never use `dangerouslySetInnerHTML` without DOMPurify
+    - [ ] Validate forms with Zod schemas
+    - [ ] Handle authentication errors gracefully
+  </Step>
+</Steps>
+
+## Security Resources
+
+<CardGroup cols={2}>
+  <Card title="Security Audit Report" icon="file-text">
+    Detailed audit findings and remediation status
+    
+    `/workspace/source/SECURITY_AUDIT.md`
+  </Card>
+  <Card title="Auth Implementation" icon="code">
+    Token validation and ownership verification utilities
+    
+    `/workspace/source/lib/auth.ts`
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Database Schema" icon="database" href="/architecture/database-schema">
+    Supabase tables, RLS policies, and type definitions
+  </Card>
+  <Card title="System Architecture" icon="diagram" href="/architecture/overview">
+    Provider stack, data flow, and application structure
+  </Card>
+</CardGroup>

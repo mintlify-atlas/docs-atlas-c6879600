@@ -1,0 +1,487 @@
+---
+title: Next.js App Router
+description: Learn about eStory's routing architecture, page structure, dynamic routes, metadata generation, and SEO configuration.
+---
+
+## Overview
+
+eStory uses Next.js 15's App Router with a split pattern: server `page.tsx` files handle metadata and data fetching, while client `*PageClient.tsx` files handle interactivity.
+
+**Location:** `app/`
+
+---
+
+## Page Structure Pattern
+
+eStory follows a consistent pattern for all pages:
+
+```
+app/
+├── [route]/
+│   ├── page.tsx           # Server component (metadata + wrapper)
+│   └── [Route]PageClient.tsx  # Client component (UI + state)
+```
+
+<Accordion title="Example: Record Page">
+  **Server Component (`app/record/page.tsx`)**
+  ```tsx
+  import type { Metadata } from "next";
+  import RecordPage from "./RecordPageClient";
+
+  export const metadata: Metadata = {
+    title: "Record Your Story",
+    description: "Capture your thoughts with AI-powered voice transcription.",
+    openGraph: {
+      title: "Record Your Story | eStory",
+      description: "Capture your thoughts with AI-powered voice transcription.",
+    },
+  };
+
+  export default function Page() {
+    return <RecordPage />;
+  }
+  ```
+
+  **Client Component (`app/record/RecordPageClient.tsx`)**
+  ```tsx
+  "use client";
+
+  export default function RecordPage() {
+    const [isRecording, setIsRecording] = useState(false);
+    // ... interactive logic
+
+    return (
+      <div>
+        <button onClick={() => setIsRecording(true)}>Record</button>
+      </div>
+    );
+  }
+  ```
+</Accordion>
+
+### Why This Pattern?
+
+<CardGroup cols={2}>
+  <Card title="Benefits" icon="check">
+    - Metadata runs on server (better SEO)
+    - Client bundle only includes interactive code
+    - Clear separation of concerns
+    - Easier testing (mock client components)
+  </Card>
+
+  <Card title="Trade-offs" icon="warning">
+    - Extra file per route
+    - Requires discipline to maintain pattern
+    - Client components can't use server-only features
+  </Card>
+</CardGroup>
+
+---
+
+## Route Structure
+
+```
+app/
+├── page.tsx                      # Landing page (HomePageClient.tsx)
+├── record/
+│   ├── page.tsx                  # Voice recording
+│   └── RecordPageClient.tsx
+├── library/
+│   ├── page.tsx                  # Personal story archive
+│   └── LibraryPageClient.tsx
+├── social/
+│   ├── page.tsx                  # Community feed
+│   └── SocialPageClient.tsx
+├── profile/
+│   ├── page.tsx                  # User profile + settings
+│   └── ProfilePageClient.tsx
+├── tracker/
+│   ├── page.tsx                  # Habit tracker
+│   └── TrackerPageClient.tsx
+├── story/
+│   └── [storyId]/
+│       ├── page.tsx              # Dynamic story detail (with generateMetadata)
+│       └── StoryPageClient.tsx
+└── books/
+    └── [bookId]/
+        ├── page.tsx              # Dynamic book detail
+        └── BookPageClient.tsx
+```
+
+---
+
+## Dynamic Routes
+
+Dynamic routes use `[param]` folders to create parameterized pages.
+
+### Story Detail Page
+
+**Route:** `/story/[storyId]`  
+**File:** `app/story/[storyId]/page.tsx`
+
+<Accordion title="Dynamic Metadata Generation">
+  ```tsx
+  import type { Metadata } from "next";
+  import { createSupabaseAdminClient } from "@/app/utils/supabase/supabaseAdmin";
+  import StoryPage from "./StoryPageClient";
+
+  export async function generateMetadata(
+    { params }: { params: { storyId: string } }
+  ): Promise<Metadata> {
+    const supabase = createSupabaseAdminClient();
+    const { data: story } = await supabase
+      .from("stories")
+      .select("title, content, is_public, author_id")
+      .eq("id", params.storyId)
+      .single();
+
+    // Privacy: private stories return no content in metadata
+    if (!story || !story.is_public) {
+      return {
+        title: "Private Story",
+        robots: { index: false, follow: false },
+      };
+    }
+
+    return {
+      title: story.title,
+      description: story.content.slice(0, 160),
+      openGraph: {
+        title: story.title,
+        description: story.content.slice(0, 160),
+        type: "article",
+      },
+    };
+  }
+
+  export default function Page({ params }: { params: { storyId: string } }) {
+    return <StoryPage storyId={params.storyId} />;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Privacy-Preserving Metadata">
+  **Rules:**
+  - Private stories return `robots: { index: false }`
+  - No content leaks in title/description
+  - Open Graph tags omitted for private content
+  - Only public stories appear in sitemap
+</Accordion>
+
+---
+
+### Book Detail Page
+
+**Route:** `/books/[bookId]`  
+**File:** `app/books/[bookId]/page.tsx`
+
+Similar pattern to story pages, fetches book metadata from Supabase.
+
+```tsx
+export async function generateMetadata(
+  { params }: { params: { bookId: string } }
+): Promise<Metadata> {
+  const supabase = createSupabaseAdminClient();
+  const { data: book } = await supabase
+    .from("books")
+    .select("title, description, author_id, is_public")
+    .eq("id", params.bookId)
+    .single();
+
+  if (!book || !book.is_public) {
+    return {
+      title: "Book Not Found",
+      robots: { index: false },
+    };
+  }
+
+  return {
+    title: book.title,
+    description: book.description,
+  };
+}
+```
+
+---
+
+## API Routes
+
+API routes live in `app/api/` and export HTTP handler functions.
+
+**Structure:**
+```
+app/api/
+├── auth/
+│   ├── nonce/route.ts        # GET - Generate nonce for wallet signature
+│   ├── login/route.ts        # POST - Verify signature + create session
+│   ├── callback/route.ts     # GET - OAuth callback handler
+│   └── onboarding/route.ts   # POST - Complete user onboarding
+├── ai/
+│   ├── transcribe/route.ts   # POST - ElevenLabs audio → text
+│   ├── enhance/route.ts      # POST - Gemini text enhancement
+│   └── analyze/route.ts      # POST - Gemini metadata extraction
+├── stories/
+│   ├── route.ts              # GET/POST - Fetch/create stories
+│   └── [storyId]/
+│       └── metadata/route.ts # GET - Fetch story metadata
+└── cre/
+    ├── trigger/route.ts      # POST - Trigger CRE verification workflow
+    ├── callback/route.ts     # POST - Receive CRE results from DON nodes
+    └── check/route.ts        # POST - Check verification status
+```
+
+See [API Routes Architecture](/architecture/api-routes) for details.
+
+---
+
+## SEO Configuration
+
+### robots.ts
+
+**File:** `app/robots.ts`
+
+Controls which pages search engines can crawl.
+
+```tsx
+import type { MetadataRoute } from "next";
+
+export default function robots(): MetadataRoute.Robots {
+  return {
+    rules: [
+      {
+        userAgent: "*",
+        allow: ["/", "/social", "/story/"],
+        disallow: ["/api/", "/record", "/library", "/profile", "/tracker", "/books/"],
+      },
+    ],
+    sitemap: "https://estory.vercel.app/sitemap.xml",
+  };
+}
+```
+
+<Accordion title="Allowed vs Disallowed">
+  **Allowed (public content):**
+  - `/` - Landing page
+  - `/social` - Community feed
+  - `/story/[id]` - Public story pages (if `is_public=true`)
+
+  **Disallowed (private/functional):**
+  - `/api/*` - API routes
+  - `/record` - Recording interface
+  - `/library` - Personal archive
+  - `/profile` - User settings
+  - `/tracker` - Habit tracker
+  - `/books/*` - Book pages (private by default)
+</Accordion>
+
+---
+
+### sitemap.ts
+
+**File:** `app/sitemap.ts`
+
+Dynamically generates XML sitemap with public stories.
+
+<Accordion title="Sitemap Generation">
+  ```tsx
+  import type { MetadataRoute } from "next";
+  import { createSupabaseAdminClient } from "@/app/utils/supabase/supabaseAdmin";
+
+  export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+    const baseUrl = "https://estory.vercel.app";
+
+    const staticRoutes: MetadataRoute.Sitemap = [
+      {
+        url: baseUrl,
+        lastModified: new Date(),
+        changeFrequency: "weekly",
+        priority: 1.0,
+      },
+      {
+        url: `${baseUrl}/social`,
+        lastModified: new Date(),
+        changeFrequency: "daily",
+        priority: 0.9,
+      },
+    ];
+
+    try {
+      const supabase = createSupabaseAdminClient();
+      const { data: stories } = await supabase
+        .from("stories")
+        .select("id, story_date, created_at")
+        .eq("is_public", true)
+        .order("created_at", { ascending: false })
+        .limit(5000);
+
+      const storyRoutes: MetadataRoute.Sitemap = stories.map((story) => ({
+        url: `${baseUrl}/story/${story.id}`,
+        lastModified: new Date(story.story_date || story.created_at),
+        changeFrequency: "monthly" as const,
+        priority: 0.7,
+      }));
+
+      return [...staticRoutes, ...storyRoutes];
+    } catch (err) {
+      console.error("[SITEMAP] Error:", err);
+      return staticRoutes;
+    }
+  }
+  ```
+</Accordion>
+
+**Generated at:** `https://estory.vercel.app/sitemap.xml`
+
+---
+
+### opengraph-image.tsx
+
+**File:** `app/opengraph-image.tsx`
+
+Generates branded Open Graph image for social sharing.
+
+```tsx
+import { ImageResponse } from "next/og";
+
+export const runtime = "edge";
+
+export default function Image() {
+  return new ImageResponse(
+    (
+      <div
+        style={{
+          fontSize: 128,
+          background: "linear-gradient(to right, #667eea, #764ba2)",
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "white",
+        }}
+      >
+        eStory
+      </div>
+    ),
+    {
+      width: 1200,
+      height: 630,
+    }
+  );
+}
+```
+
+**Generated at:** `https://estory.vercel.app/opengraph-image`
+
+---
+
+## Metadata Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Static Metadata" icon="file">
+    Use `export const metadata` for pages with fixed titles/descriptions.
+  </Card>
+
+  <Card title="Dynamic Metadata" icon="code">
+    Use `generateMetadata` for pages with URL params (story/[id]).
+  </Card>
+
+  <Card title="Privacy" icon="shield">
+    Never leak private content in metadata. Return `robots: { index: false }` for private pages.
+  </Card>
+
+  <Card title="Open Graph" icon="share">
+    Include `openGraph` fields for rich social sharing previews.
+  </Card>
+</CardGroup>
+
+---
+
+## Loading States
+
+Next.js supports `loading.tsx` files for route-level loading UI:
+
+```tsx
+// app/library/loading.tsx
+export default function Loading() {
+  return <div>Loading your stories...</div>;
+}
+```
+
+eStory currently handles loading states in client components with `Skeleton` components.
+
+---
+
+## Error Handling
+
+Next.js supports `error.tsx` files for route-level error boundaries:
+
+```tsx
+// app/error.tsx
+"use client";
+
+export default function Error({
+  error,
+  reset,
+}: {
+  error: Error;
+  reset: () => void;
+}) {
+  return (
+    <div>
+      <h2>Something went wrong!</h2>
+      <button onClick={reset}>Try again</button>
+    </div>
+  );
+}
+```
+
+eStory currently uses `ErrorBoundary` component from `components/ErrorBoundary.tsx`.
+
+---
+
+## Layout
+
+**File:** `app/layout.tsx`
+
+Root layout wraps all pages with providers and navigation.
+
+```tsx
+import { Providers } from "@/components/Provider";
+import { Navigation } from "@/components/Navigation";
+import { Footer } from "@/components/Footer";
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en" suppressHydrationWarning>
+      <body>
+        <Providers>
+          <Navigation />
+          <main>{children}</main>
+          <Footer />
+        </Providers>
+      </body>
+    </html>
+  );
+}
+```
+
+---
+
+## Related
+
+<CardGroup cols={3}>
+  <Card title="Components" icon="blocks" href="/architecture/components">
+    Client components used in pages
+  </Card>
+  <Card title="API Routes" icon="route" href="/architecture/api-routes">
+    Backend API structure
+  </Card>
+  <Card title="Middleware" icon="filter" href="/architecture/middleware">
+    Rate limiting and CORS
+  </Card>
+</CardGroup>

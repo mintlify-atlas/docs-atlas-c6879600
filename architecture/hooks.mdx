@@ -1,0 +1,491 @@
+---
+title: React Hooks
+description: Custom React hooks for vault encryption, Web3 interactions, verified metrics, and data fetching in eStory.
+---
+
+## Overview
+
+eStory uses custom React hooks to encapsulate complex logic for local encryption, blockchain interactions, AI verification, and API calls. All hooks follow React's rules and provide reactive state updates.
+
+**Location:** `app/hooks/`
+
+---
+
+## Vault Hooks
+
+### useVault
+
+**File:** `app/hooks/useVault.ts`
+
+Manages client-side vault setup, unlock, and lock operations using AES-256-GCM encryption.
+
+<Accordion title="API">
+  ```tsx
+  interface UseVaultResult {
+    isSetup: boolean;        // Vault has been set up
+    isUnlocked: boolean;     // Vault is currently unlocked
+    isLoading: boolean;      // Operation in progress
+    error: string | null;    // Error message
+    setup: (pin: string) => Promise<void>;
+    unlock: (pin: string) => Promise<boolean>;
+    lock: () => void;
+    changePin: (oldPin: string, newPin: string) => Promise<void>;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage Example">
+  ```tsx
+  import { useVault } from "@/app/hooks/useVault";
+
+  function VaultSettings() {
+    const { isSetup, isUnlocked, setup, unlock, lock } = useVault();
+
+    if (!isSetup) {
+      return <button onClick={() => setup("1234")}>Set up vault</button>;
+    }
+
+    if (!isUnlocked) {
+      return <button onClick={() => unlock("1234")}>Unlock</button>;
+    }
+
+    return <button onClick={lock}>Lock vault</button>;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Security Notes">
+  - PIN → PBKDF2 (100K iterations) → KEK (Key Encryption Key)
+  - KEK wraps DEK (Data Encryption Key) using AES-KW
+  - DEK held in-memory only while unlocked
+  - `clearAllKeys()` called on sign-out
+  - Uses Web Crypto API (browser-only)
+</Accordion>
+
+---
+
+### useLocalStories
+
+**File:** `app/hooks/useLocalStories.ts`
+
+Provides reactive CRUD operations for encrypted local stories stored in IndexedDB via Dexie.
+
+<Accordion title="API">
+  ```tsx
+  interface UseLocalStoriesResult {
+    stories: DecryptedStory[];  // Reactive list (re-renders on change)
+    isLoading: boolean;
+    error: string | null;
+    saveStory: (params: SaveStoryParams) => Promise<string>;
+    getDecryptedStory: (localId: string) => Promise<DecryptedStory | null>;
+    deleteStory: (localId: string) => Promise<void>;
+    updateSyncStatus: (localId: string, status: SyncStatus, cloudId?: string) => Promise<void>;
+  }
+
+  interface SaveStoryParams {
+    title: string;
+    content: string;
+    audioBlob?: Blob;
+    metadata?: Record<string, unknown>;
+    is_public: boolean;
+    story_date: string;
+    cloud_id?: string;
+    sync_status?: SyncStatus; // "local" | "synced" | "pending" | "failed"
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage Example">
+  ```tsx
+  import { useLocalStories } from "@/app/hooks/useLocalStories";
+
+  function LocalStoriesList() {
+    const { stories, saveStory, deleteStory } = useLocalStories();
+
+    const handleSave = async () => {
+      const localId = await saveStory({
+        title: "My Local Story",
+        content: "This stays on my device.",
+        is_public: false,
+        story_date: new Date().toISOString(),
+      });
+      console.log("Saved with ID:", localId);
+    };
+
+    return (
+      <div>
+        {stories.map(story => (
+          <div key={story.localId}>
+            <h3>{story.title}</h3>
+            <button onClick={() => deleteStory(story.localId)}>Delete</button>
+          </div>
+        ))}
+        <button onClick={handleSave}>Save New Story</button>
+      </div>
+    );
+  }
+  ```
+</Accordion>
+
+<Accordion title="How It Works">
+  1. Uses `useLiveQuery` from Dexie to reactively watch IndexedDB
+  2. Automatically decrypts records when vault is unlocked
+  3. Encrypts title, content, audio, and metadata separately
+  4. Computes SHA-256 checksum of plaintext for integrity
+  5. Tracks sync status for cloud backup coordination
+</Accordion>
+
+---
+
+## Web3 Hooks
+
+### useIStoryToken (ERC20)
+
+**File:** `app/hooks/useIStoryToken.ts`
+
+Interacts with the $STORY ERC20 token contract on Base Sepolia.
+
+<Accordion title="API">
+  ```tsx
+  interface UseEStoryTokenResult {
+    balance: bigint;              // Raw balance in wei
+    formattedBalance: string;     // Human-readable (e.g., "150.5")
+    allowance: bigint;            // Approved amount for StoryProtocol
+    approve: (amount: string) => Promise<void>;
+    isPending: boolean;           // Transaction in progress
+    refetchBalance: () => void;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage">
+  ```tsx
+  import { useEStoryToken } from "@/app/hooks/useIStoryToken";
+
+  function TokenBalance() {
+    const { formattedBalance, approve, isPending } = useEStoryToken();
+
+    return (
+      <div>
+        <p>Balance: {formattedBalance} $STORY</p>
+        <button
+          onClick={() => approve("10")}
+          disabled={isPending}
+        >
+          Approve 10 tokens
+        </button>
+      </div>
+    );
+  }
+  ```
+</Accordion>
+
+---
+
+### useStoryProtocol
+
+**File:** `app/hooks/useStoryProtocol.ts`
+
+Interacts with the StoryProtocol contract for tipping and paywall unlocks.
+
+<Accordion title="API">
+  ```tsx
+  interface UseStoryProtocolResult {
+    tipCreator: (creatorAddress: string, amount: number, storyId: string) => Promise<void>;
+    payPaywall: (authorAddress: string, amount: number, storyId: string) => Promise<void>;
+    isPending: boolean;
+    hash: string | undefined;  // Transaction hash
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage">
+  ```tsx
+  import { useStoryProtocol } from "@/app/hooks/useStoryProtocol";
+
+  function TipButton({ story }) {
+    const { tipCreator, isPending } = useStoryProtocol();
+
+    return (
+      <button
+        onClick={() => tipCreator(
+          story.author_wallet.username,
+          5,
+          story.id.toString()
+        )}
+        disabled={isPending}
+      >
+        {isPending ? "Tipping..." : "Tip 5 $STORY"}
+      </button>
+    );
+  }
+  ```
+</Accordion>
+
+---
+
+### useStoryNFT
+
+**File:** `app/hooks/useStoryNFT.ts`
+
+Mints story books as ERC721 NFTs.
+
+<Accordion title="API">
+  ```tsx
+  interface UseStoryNFTResult {
+    mintBook: (ipfsUri: string) => Promise<void>;
+    isPending: boolean;
+    hash: string | undefined;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage">
+  ```tsx
+  import { useStoryNFT } from "@/app/hooks/useStoryNFT";
+  import { ipfsService } from "@/app/utils/ipfsService";
+
+  function MintBookButton({ bookData }) {
+    const { mintBook, isPending } = useStoryNFT();
+
+    const handleMint = async () => {
+      // Upload metadata to IPFS
+      const { hash } = await ipfsService.uploadMetadata(bookData);
+      // Mint NFT with IPFS URI
+      await mintBook(`ipfs://${hash}`);
+    };
+
+    return (
+      <button onClick={handleMint} disabled={isPending}>
+        {isPending ? "Minting..." : "Mint as NFT"}
+      </button>
+    );
+  }
+  ```
+</Accordion>
+
+---
+
+## Chainlink CRE Hooks
+
+### useVerifiedMetrics
+
+**File:** `app/hooks/useVerifiedMetrics.ts`
+
+Fetches privacy-preserving CRE-attested story metrics with author-based filtering.
+
+<Accordion title="Privacy Model">
+  - **Author** - Sees full metrics (scores, themes, word count) + proof
+  - **Public** - Sees proof only (tier, threshold, attestation ID)
+  - **On-chain** - Only hashes and tier stored (PrivateVerifiedMetrics.sol)
+  - **Off-chain** - Full metrics in Supabase (author-only access)
+</Accordion>
+
+<Accordion title="API">
+  ```tsx
+  interface UseVerifiedMetricsResult {
+    metrics: VerifiedMetrics | null;    // Full data (author only)
+    proof: VerifiedMetricsProof | null; // Minimal proof (everyone)
+    isPending: boolean;                 // CRE workflow in progress
+    isVerified: boolean;                // Has on-chain proof
+    isAuthor: boolean;                  // Current user is author
+    error: string | null;
+    refetch: () => void;                // Trigger poll + re-fetch
+  }
+
+  interface VerifiedMetrics {
+    significance_score: number;
+    emotional_depth: number;
+    quality_score: number;
+    word_count: number;
+    verified_themes: string[];
+    cre_attestation_id: string | null;
+    on_chain_tx_hash: string | null;
+  }
+
+  interface VerifiedMetricsProof {
+    qualityTier: number;          // 1-5
+    meetsQualityThreshold: boolean;
+    metricsHash?: string;
+    attestationId?: string;
+    verifiedAt?: number;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage">
+  ```tsx
+  import { useVerifiedMetrics } from "@/app/hooks/useVerifiedMetrics";
+
+  function StoryMetrics({ storyId }) {
+    const { metrics, proof, isPending, isVerified, isAuthor } =
+      useVerifiedMetrics(storyId);
+
+    if (isPending) return <p>Verification in progress...</p>;
+    if (!isVerified) return <p>Not verified</p>;
+
+    return (
+      <div>
+        <p>Quality Tier: {proof?.qualityTier}/5</p>
+        {isAuthor && metrics && (
+          <>
+            <p>Significance: {metrics.significance_score}</p>
+            <p>Themes: {metrics.verified_themes.join(", ")}</p>
+          </>
+        )}
+      </div>
+    );
+  }
+  ```
+</Accordion>
+
+<Accordion title="Polling Behavior">
+  - Auto-polls every 10 seconds when `isPending=true`
+  - Stops polling once verification is complete
+  - Call `refetch()` to manually trigger a check
+</Accordion>
+
+---
+
+## Data Fetching Hooks
+
+### useNotifications
+
+**File:** `app/hooks/useNotifications.ts`
+
+Manages user notifications with real-time polling.
+
+<Accordion title="API">
+  ```tsx
+  interface UseNotificationsReturn {
+    notifications: Notification[];
+    unreadCount: number;
+    loading: boolean;
+    error: string | null;
+    hasMore: boolean;
+    fetchNotifications: (params?: FetchParams) => Promise<void>;
+    fetchUnreadCount: () => Promise<void>;
+    createNotification: (payload) => Promise<void>;
+    markAsRead: (notificationId: string) => Promise<void>;
+    markAllAsRead: () => Promise<void>;
+    deleteNotification: (notificationId: string) => Promise<void>;
+    deleteAllNotifications: () => Promise<void>;
+    subscribe: () => void;    // Start polling
+    unsubscribe: () => void; // Stop polling
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage">
+  ```tsx
+  import { useNotifications } from "@/app/hooks/useNotifications";
+
+  function NotificationBell() {
+    const { unreadCount, markAllAsRead } = useNotifications();
+
+    return (
+      <button onClick={markAllAsRead}>
+        Notifications ({unreadCount})
+      </button>
+    );
+  }
+  ```
+</Accordion>
+
+<Accordion title="Auto-Subscription">
+  - Automatically starts polling when user is connected
+  - Polls every 10 seconds
+  - Cleans up on unmount
+</Accordion>
+
+---
+
+### useBrowserSupabase
+
+**File:** `app/hooks/useBrowserSupabase.ts`
+
+Provides the singleton Supabase client for client components.
+
+```tsx
+import { useBrowserSupabase } from "@/app/hooks/useBrowserSupabase";
+
+function MyComponent() {
+  const supabase = useBrowserSupabase();
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    const fetchData = async () => {
+      const { data } = await supabase.from("stories").select("*");
+      console.log(data);
+    };
+
+    fetchData();
+  }, [supabase]);
+}
+```
+
+**Important:** Do NOT create new Supabase clients in components. Always use the singleton.
+
+---
+
+## Planned Hooks (Phase 2)
+
+<CardGroup cols={2}>
+  <Card title="useStoryMetadata" icon="tag">
+    Fetch and cache story metadata (themes, domains, insights) with React Query.
+  </Card>
+
+  <Card title="usePatterns" icon="chart-line">
+    Analyze recurring patterns across user's stories (themes over time, domain distribution).
+  </Card>
+
+  <Card title="useReflection" icon="book-open">
+    Generate weekly/monthly reflection summaries from story history.
+  </Card>
+
+  <Card title="useDeviceCapability" icon="mobile">
+    Detect device capabilities (GPU, motion sensors) to optimize Three.js backgrounds.
+  </Card>
+</CardGroup>
+
+---
+
+## Hook Best Practices
+
+<Accordion title="Rules of Hooks">
+  - Only call hooks at the top level of components
+  - Only call hooks from React functions (components or custom hooks)
+  - Use `use` prefix for custom hooks
+  - Clean up side effects in `useEffect` return functions
+</Accordion>
+
+<Accordion title="Dependency Arrays">
+  - Include all values used inside the effect
+  - Use `useCallback` for stable function references
+  - Use `useMemo` for expensive computations
+  - Avoid inline object/array literals in deps
+</Accordion>
+
+<Accordion title="Error Handling">
+  - Always provide error states in hook returns
+  - Log errors with `console.error` for debugging
+  - Display user-friendly error messages
+  - Reset error state before retrying operations
+</Accordion>
+
+---
+
+## Related
+
+<CardGroup cols={3}>
+  <Card title="Components" icon="blocks" href="/architecture/components">
+    UI components that use these hooks
+  </Card>
+  <Card title="Services" icon="server" href="/architecture/services">
+    Backend services called by hooks
+  </Card>
+  <Card title="API Routes" icon="route" href="/architecture/api-routes">
+    API endpoints consumed by hooks
+  </Card>
+</CardGroup>

@@ -1,0 +1,140 @@
+---
+title: 'Transcribe Audio'
+api: 'POST /api/ai/transcribe'
+description: 'Convert audio recordings to text using ElevenLabs Scribe Model'
+---
+
+## Overview
+
+Transcribes audio files to text using ElevenLabs Scribe Model (v1). Supports multiple audio formats with automatic MIME type detection.
+
+## Authentication
+
+Requires Bearer token authentication.
+
+```bash
+Authorization: Bearer YOUR_SUPABASE_JWT
+```
+
+## Request
+
+<ParamField body="file" type="File" required>
+  Audio file to transcribe. Must be one of the supported audio formats.
+</ParamField>
+
+### Supported Formats
+
+- `audio/webm`
+- `audio/wav`
+- `audio/mp3`
+- `audio/mpeg`
+- `audio/ogg`
+- `audio/flac`
+- `audio/m4a`
+- `audio/mp4`
+- `audio/x-m4a`
+- `audio/aac`
+- `video/webm` (audio track)
+
+### Limits
+
+- **Maximum file size:** 25MB
+- **Language:** English (eng)
+- **Diarization:** Disabled
+- **Audio events:** Tagged
+
+## Response
+
+<ResponseField name="text" type="string">
+  The transcribed text from the audio file.
+</ResponseField>
+
+## Example
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://your-domain.com/api/ai/transcribe \
+  -H "Authorization: Bearer YOUR_SUPABASE_JWT" \
+  -F "file=@recording.webm"
+```
+
+```javascript JavaScript
+const formData = new FormData();
+formData.append('file', audioBlob, 'recording.webm');
+
+const response = await fetch('/api/ai/transcribe', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`
+  },
+  body: formData
+});
+
+const { text } = await response.json();
+console.log('Transcription:', text);
+```
+
+</CodeGroup>
+
+### Success Response
+
+```json
+{
+  "text": "Today I had an amazing breakthrough at work. After weeks of debugging, I finally figured out the root cause of the performance issue. The solution was simpler than I thought, but getting there required deep focus and patience."
+}
+```
+
+### Error Responses
+
+<ResponseExample>
+
+```json 400 Bad Request - No file provided
+{
+  "error": "No audio file provided"
+}
+```
+
+```json 400 Bad Request - File too large
+{
+  "error": "File too large. Maximum size is 25MB."
+}
+```
+
+```json 400 Bad Request - Invalid file type
+{
+  "error": "Invalid file type. Only audio files are accepted."
+}
+```
+
+```json 422 Unprocessable Entity - Empty transcription
+{
+  "error": "Transcription returned empty result. Please try again."
+}
+```
+
+```json 500 Internal Server Error
+{
+  "error": "Failed to transcribe audio. Please try again."
+}
+```
+
+```json 502 Bad Gateway - API key issue
+{
+  "error": "Transcription service authentication failed. Please check server configuration."
+}
+```
+
+</ResponseExample>
+
+## Implementation Details
+
+- Uses ElevenLabs Scribe Model (`scribe_v1`)
+- Processes audio with language code `eng`
+- Tags audio events for enhanced accuracy
+- Converts uploaded file to Blob format before processing
+- Handles both legacy string responses and modern object responses from SDK
+
+## Rate Limiting
+
+Subject to API rate limits defined in middleware (10 requests/minute for AI endpoints).

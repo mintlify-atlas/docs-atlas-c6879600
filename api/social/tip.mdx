@@ -1,0 +1,103 @@
+---
+title: 'Tip Creator'
+description: 'Send $STORY tokens to a story creator'
+---
+
+## Endpoint
+
+<RequestExample>
+```bash cURL
+curl -X POST https://your-domain.com/api/tip \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199",
+    "amount": 10,
+    "storyId": 42
+  }'
+```
+</RequestExample>
+
+## Request
+
+<ParamField body="to" type="string" required>
+  The creator's wallet address to receive the tip
+</ParamField>
+
+<ParamField body="amount" type="number" required>
+  Amount of $STORY tokens to send (in whole tokens, not wei)
+</ParamField>
+
+<ParamField body="storyId" type="number" required>
+  The numeric ID of the story being tipped
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates if the blockchain transaction was initiated successfully
+</ResponseField>
+
+<ResponseField name="hash" type="string">
+  The blockchain transaction hash for tracking
+</ResponseField>
+
+<ResponseExample>
+```json Response
+{
+  "success": true,
+  "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+}
+```
+</ResponseExample>
+
+<Warning>
+  This endpoint **initiates a blockchain transaction** via the eStory Token smart contract on Base Sepolia. The transaction must be signed and executed by your wallet.
+</Warning>
+
+## Blockchain Details
+
+- **Contract**: eStoryToken (ERC20)
+- **Function**: `tipCreator(address to, uint256 amount, uint256 storyId)`
+- **Network**: Base Sepolia (Chain ID: 84532)
+- **Token Decimals**: 18 (1 $STORY = 1e18 wei)
+
+## Prerequisites
+
+Before calling this endpoint:
+
+1. **Connect your wallet** via RainbowKit/WalletConnect
+2. **Approve the contract** to spend your $STORY tokens (if not already approved)
+3. **Have sufficient $STORY balance** for the tip amount
+4. **Have ETH** for gas fees on Base Sepolia
+
+## Error Responses
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | Missing required fields | One or more of `to`, `amount`, or `storyId` missing |
+| 401 | Unauthorized | Invalid or missing Bearer token |
+| 500 | Tip failed | Blockchain transaction failed (insufficient balance, gas, or approval) |
+
+<Note>
+  The `amount` parameter is in **whole tokens** (e.g., `10` = 10 $STORY tokens). The contract automatically converts this to wei (10 × 10^18).
+</Note>
+
+## Transaction Verification
+
+After receiving the transaction hash, you can:
+
+1. **Track on block explorer**: `https://sepolia.basescan.org/tx/{hash}`
+2. **Wait for confirmation** before showing success UI
+3. **Listen for events** emitted by the eStoryToken contract
+
+## Related Hooks
+
+For client-side integration, use the `useStoryProtocol` hook:
+
+```typescript
+import { useStoryProtocol } from '@/app/hooks/useStoryProtocol';
+
+const { tipCreator } = useStoryProtocol();
+await tipCreator(creatorAddress, amount, storyId);
+```

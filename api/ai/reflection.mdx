@@ -1,0 +1,357 @@
+---
+title: 'Generate Reflection'
+api: 'POST /api/ai/reflection'
+description: 'Generate weekly reflection from journal entries with AI insights'
+---
+
+## Overview
+
+Generates a thoughtful, empathetic weekly reflection by analyzing the user's journal entries from the past 7 days. Uses Google Gemini 2.5 Flash to identify patterns, themes, and provide supportive insights. Limited to one reflection per week.
+
+## Authentication
+
+Requires Bearer token authentication (future implementation). Currently validates via request body parameters.
+
+```bash
+Authorization: Bearer YOUR_SUPABASE_JWT
+```
+
+## Endpoints
+
+### GET - Fetch Reflections
+
+Retrieve existing reflections for a user.
+
+<ParamField query="userId" type="string" required>
+  UUID of the user whose reflections to fetch.
+</ParamField>
+
+<ParamField query="limit" type="number" default="5">
+  Maximum number of reflections to return.
+</ParamField>
+
+### POST - Generate Reflection
+
+Create a new weekly reflection.
+
+<ParamField body="userId" type="string" required>
+  UUID of the user requesting the reflection.
+</ParamField>
+
+<ParamField body="userWallet" type="string" required>
+  Ethereum wallet address of the user (for future Web3 features).
+</ParamField>
+
+## Limits
+
+- **Generation frequency:** 1 reflection per week (7-day cooldown)
+- **Stories analyzed:** Maximum 20 most recent stories from past 7 days
+- **Canonical weight:** Stories marked as canonical count 2x
+- **Week definition:** Sunday to Saturday
+- **Reflection length:** 2-3 paragraphs (max 500 words)
+- **Model:** Gemini 2.5 Flash
+
+## Response (GET)
+
+<ResponseField name="reflections" type="array">
+  Array of reflection objects.
+</ResponseField>
+
+<ResponseField name="canGenerate" type="boolean">
+  Whether the user can generate a new reflection this week.
+</ResponseField>
+
+<ResponseField name="currentWeekStart" type="string">
+  ISO 8601 timestamp of the current week's start date (Sunday).
+</ResponseField>
+
+## Response (POST)
+
+<ResponseField name="success" type="boolean">
+  Indicates if the reflection was generated successfully.
+</ResponseField>
+
+<ResponseField name="reflection" type="object">
+  The generated reflection object.
+  
+  <Expandable title="reflection properties">
+    
+    <ResponseField name="id" type="string">
+      UUID of the reflection.
+    </ResponseField>
+    
+    <ResponseField name="user_id" type="string">
+      UUID of the user.
+    </ResponseField>
+    
+    <ResponseField name="user_wallet" type="string">
+      Ethereum wallet address of the user.
+    </ResponseField>
+    
+    <ResponseField name="reflection_text" type="string">
+      The 2-3 paragraph reflection with insights and patterns.
+    </ResponseField>
+    
+    <ResponseField name="stories_analyzed" type="string[]">
+      Array of story IDs that were analyzed for this reflection.
+    </ResponseField>
+    
+    <ResponseField name="themes_identified" type="string[]">
+      1-5 dominant themes across the week's entries.
+    </ResponseField>
+    
+    <ResponseField name="dominant_tone" type="string">
+      Overall emotional tone of the week. One of: `reflective`, `joyful`, `anxious`, `hopeful`, `melancholic`, `grateful`, `frustrated`, `peaceful`, `excited`, `uncertain`, `neutral`.
+    </ResponseField>
+    
+    <ResponseField name="dominant_domain" type="string">
+      Primary life domain focus. One of: `work`, `relationships`, `health`, `identity`, `growth`, `creativity`, `spirituality`, `family`, `adventure`, `learning`, `general`.
+    </ResponseField>
+    
+    <ResponseField name="week_start" type="string">
+      ISO 8601 timestamp of the week start (Sunday 00:00:00).
+    </ResponseField>
+    
+    <ResponseField name="week_end" type="string">
+      ISO 8601 timestamp of the week end (Saturday 23:59:59).
+    </ResponseField>
+    
+    <ResponseField name="canonical_weight" type="number">
+      Total weight of canonical stories analyzed (canonical stories count 2x).
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp of when reflection was created.
+    </ResponseField>
+    
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="storiesAnalyzed" type="number">
+  Count of stories that were analyzed.
+</ResponseField>
+
+<ResponseField name="canonicalWeight" type="number">
+  Total weight of canonical stories (canonical = 2x regular stories).
+</ResponseField>
+
+## Examples
+
+### GET - Fetch Reflections
+
+<CodeGroup>
+
+```bash curl
+curl -X GET "https://your-domain.com/api/ai/reflection?userId=123e4567-e89b-12d3-a456-426614174000&limit=5" \
+  -H "Authorization: Bearer YOUR_SUPABASE_JWT"
+```
+
+```javascript JavaScript
+const response = await fetch(
+  `/api/ai/reflection?userId=${userId}&limit=5`,
+  {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  }
+);
+
+const { reflections, canGenerate, currentWeekStart } = await response.json();
+```
+
+</CodeGroup>
+
+#### Success Response
+
+```json
+{
+  "reflections": [
+    {
+      "id": "abc123...",
+      "user_id": "123e4567...",
+      "reflection_text": "This week, your journal entries reveal a theme of professional growth and creative exploration...",
+      "themes_identified": ["growth", "creativity", "work"],
+      "dominant_tone": "hopeful",
+      "dominant_domain": "work",
+      "week_start": "2026-02-23T00:00:00.000Z",
+      "week_end": "2026-03-01T23:59:59.999Z",
+      "created_at": "2026-03-02T10:30:00.000Z",
+      "stories_analyzed": ["story-id-1", "story-id-2"],
+      "canonical_weight": 4.0
+    }
+  ],
+  "canGenerate": false,
+  "currentWeekStart": "2026-03-02T00:00:00.000Z"
+}
+```
+
+### POST - Generate Reflection
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://your-domain.com/api/ai/reflection \
+  -H "Authorization: Bearer YOUR_SUPABASE_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "123e4567-e89b-12d3-a456-426614174000",
+    "userWallet": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
+  }'
+```
+
+```javascript JavaScript
+const response = await fetch('/api/ai/reflection', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    userId: '123e4567-e89b-12d3-a456-426614174000',
+    userWallet: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb'
+  })
+});
+
+const { success, reflection, storiesAnalyzed, canonicalWeight } = await response.json();
+```
+
+</CodeGroup>
+
+#### Success Response
+
+```json
+{
+  "success": true,
+  "reflection": {
+    "id": "def456...",
+    "user_id": "123e4567-e89b-12d3-a456-426614174000",
+    "user_wallet": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+    "reflection_text": "This week, your journal entries reveal a beautiful theme of connection and growth. You've been navigating important conversations with family members, particularly the deep discussion with your sister about childhood memories. There's a clear pattern of seeking understanding and healing through these interactions.\n\nWhat stands out is your growing awareness of the depth of family bonds and how past experiences shape present relationships. You're not just recording events—you're actively processing and finding meaning in them. This reflective quality suggests you're in a phase of personal growth and emotional maturity.\n\nKeep nurturing these connections and continuing to journal about them. Your willingness to explore these emotions with honesty is a strength that will serve you well as you continue this journey of self-discovery and relationship building.",
+    "stories_analyzed": [
+      "story-id-1",
+      "story-id-2",
+      "story-id-3"
+    ],
+    "themes_identified": [
+      "family",
+      "connection",
+      "healing",
+      "growth"
+    ],
+    "dominant_tone": "reflective",
+    "dominant_domain": "family",
+    "week_start": "2026-03-02T00:00:00.000Z",
+    "week_end": "2026-03-08T23:59:59.999Z",
+    "canonical_weight": 2.0,
+    "created_at": "2026-03-03T15:45:00.000Z"
+  },
+  "storiesAnalyzed": 3,
+  "canonicalWeight": 2.0
+}
+```
+
+### Error Responses
+
+<ResponseExample>
+
+```json 400 Bad Request - GET
+{
+  "error": "Missing required parameter: userId"
+}
+```
+
+```json 400 Bad Request - POST
+{
+  "error": "Missing required fields: userId and userWallet"
+}
+```
+
+```json 429 Too Many Requests - Weekly limit
+{
+  "error": "You can only generate one reflection per week",
+  "nextAvailable": "2026-03-09T00:00:00.000Z",
+  "existingReflection": {
+    "id": "def456...",
+    "created_at": "2026-03-03T15:45:00.000Z"
+  }
+}
+```
+
+```json 500 Internal Server Error - AI response error
+{
+  "error": "AI returned invalid response format"
+}
+```
+
+```json 500 Internal Server Error - Configuration error
+{
+  "error": "Server configuration error: API Key missing"
+}
+```
+
+```json 500 Internal Server Error - Database error
+{
+  "error": "Failed to generate reflection"
+}
+```
+
+</ResponseExample>
+
+## Reflection Guidelines
+
+The AI reflection follows these principles:
+
+1. **Warm and encouraging:** Uses a compassionate life coach tone, not clinical
+2. **Pattern-focused:** Identifies themes and patterns across multiple entries
+3. **Non-prescriptive:** Offers perspective without telling users what to do
+4. **Authentic:** Acknowledges sparse entries gently without judgment
+5. **Forward-looking:** Encourages continued journaling and self-reflection
+
+## Empty Week Handling
+
+If the user has no journal entries in the past 7 days, the API generates an encouraging message about the value of journaling instead of a pattern-based reflection.
+
+## Canonical Story Weighting
+
+Stories marked as "canonical" (Important/Key Moments) receive 2x weight in the analysis:
+
+- **Regular story:** Weight = 1.0
+- **Canonical story:** Weight = 2.0
+- The `canonical_weight` field sums all weights
+- Canonical stories are emphasized in the prompt with `**KEY MOMENT**` markers
+
+This ensures that significant life events have more influence on the reflection than routine entries.
+
+## Database Tables
+
+### weekly_reflections
+
+Stores generated reflections with metadata:
+
+- `id` (UUID, primary key)
+- `user_id` (UUID, foreign key → users)
+- `user_wallet` (text)
+- `reflection_text` (text)
+- `stories_analyzed` (UUID[])
+- `themes_identified` (text[])
+- `dominant_tone` (text)
+- `dominant_domain` (text)
+- `week_start` (timestamp)
+- `week_end` (timestamp)
+- `canonical_weight` (numeric)
+- `created_at` (timestamp)
+
+## Rate Limiting
+
+- **Weekly limit:** 1 reflection per user per week
+- **Cooldown period:** 7 days from last generation
+- **Week boundary:** Sunday 00:00:00 to Saturday 23:59:59
+- **Enforcement:** Server-side check against existing reflections
+
+## Use Cases
+
+- **Weekly review:** Help users reflect on their week's experiences
+- **Pattern discovery:** Identify emotional and thematic patterns
+- **Progress tracking:** See how themes evolve over time
+- **Motivation:** Encourage continued journaling with insights
+- **Mental health:** Gain perspective on emotional states and triggers

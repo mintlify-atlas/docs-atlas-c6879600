@@ -1,0 +1,428 @@
+---
+title: Component Architecture
+description: Learn about eStory's component structure, including shadcn/ui primitives, custom components, and the Provider stack.
+---
+
+## Overview
+
+eStory's frontend is built with React 19 and Next.js 15, using a modular component architecture that separates UI primitives, custom business logic, and provider context.
+
+## Component Structure
+
+```
+components/
+├── ui/                    # shadcn/ui primitives
+├── vault/                 # Vault-specific components
+├── three/                 # Three.js backgrounds
+├── patterns/              # Pattern analysis views
+├── emails/                # Email templates
+└── [Custom Components]    # Business logic components
+```
+
+---
+
+## shadcn/ui Components
+
+All UI primitives live in `components/ui/` and are based on [shadcn/ui](https://ui.shadcn.com/), built with Radix UI and Tailwind CSS.
+
+<AccordionGroup>
+  <Accordion title="Available UI Components">
+    - **button.tsx** - Button variants (default, outline, ghost, link)
+    - **card.tsx** - Card, CardHeader, CardContent, CardFooter
+    - **input.tsx** - Text input with validation states
+    - **textarea.tsx** - Multi-line text input
+    - **label.tsx** - Form labels
+    - **checkbox.tsx** - Checkbox with label
+    - **switch.tsx** - Toggle switch
+    - **badge.tsx** - Status badges
+    - **avatar.tsx** - User avatars with fallback
+    - **dialog.tsx** - Modal dialogs
+    - **dropdown-menu.tsx** - Context menus
+    - **tabs.tsx** - Tabbed navigation
+    - **tooltip.tsx** - Hover tooltips
+    - **progress.tsx** - Progress bars
+    - **skeleton.tsx** - Loading skeletons
+    - **separator.tsx** - Visual dividers
+    - **collapsible.tsx** - Expandable sections
+  </Accordion>
+
+  <Accordion title="Usage Example">
+    ```tsx
+    import { Button } from "@/components/ui/button";
+    import { Card, CardHeader, CardContent } from "@/components/ui/card";
+
+    export function MyComponent() {
+      return (
+        <Card>
+          <CardHeader>
+            <h2>My Card</h2>
+          </CardHeader>
+          <CardContent>
+            <Button variant="outline">Click me</Button>
+          </CardContent>
+        </Card>
+      );
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Custom Components
+
+### AuthProvider
+
+**Location:** `components/AuthProvider.tsx`
+
+Manages authentication state for both wallet (MetaMask) and Google OAuth users.
+
+<Accordion title="Features">
+  - Unified profile interface for wallet + Google users
+  - Automatic wallet signature flow on connection
+  - Google OAuth integration via Supabase
+  - Secure token storage (Supabase JWT + wallet JWT)
+  - Account linking (connect Google to existing wallet account)
+  - Onboarding flow management
+</Accordion>
+
+<Accordion title="API">
+  ```tsx
+  interface AuthContextType {
+    profile: UnifiedUserProfile | null;
+    isLoading: boolean;
+    needsOnboarding: boolean;
+    getAccessToken: () => Promise<string | null>;
+    signInWithGoogle: () => Promise<void>;
+    signOut: () => Promise<void>;
+    completeOnboarding: (data: OnboardingData) => Promise<void>;
+    refreshProfile: () => Promise<void>;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Usage">
+  ```tsx
+  import { useAuth } from "@/components/AuthProvider";
+
+  export function MyPage() {
+    const { profile, getAccessToken } = useAuth();
+
+    const handleSave = async () => {
+      const token = await getAccessToken();
+      await fetch("/api/stories", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title: "My Story" }),
+      });
+    };
+
+    return <div>Welcome, {profile?.name}!</div>;
+  }
+  ```
+</Accordion>
+
+---
+
+### Navigation
+
+**Location:** `components/Navigation.tsx`
+
+Responsive navigation bar with desktop and mobile layouts.
+
+<CardGroup cols={2}>
+  <Card title="Desktop Nav" icon="desktop">
+    - Logo + brand
+    - Center-aligned nav links
+    - Token balance display
+    - Notifications dropdown
+    - Theme toggle
+    - Auth button
+  </Card>
+
+  <Card title="Mobile Nav" icon="mobile">
+    - Bottom tab bar
+    - Icon-based navigation
+    - Active state highlighting
+    - Sticky positioning
+  </Card>
+</CardGroup>
+
+```tsx components/Navigation.tsx
+const navigation = [
+  { name: "Home", href: "/", icon: Home },
+  { name: "Record", href: "/record", icon: Mic },
+  { name: "Archive", href: "/library", icon: Archive },
+  { name: "Community", href: "/social", icon: Users },
+  { name: "Profile", href: "/profile", icon: User },
+  { name: "Tracker", href: "/tracker", icon: TrainTrack },
+];
+```
+
+---
+
+### StoryCard
+
+**Location:** `components/StoryCard.tsx`
+
+Displays a story with metadata, actions, and optional paywall.
+
+<Accordion title="Props Interface">
+  ```tsx
+  interface StoryCardProps {
+    story: StoryDataType;
+    onLike?: (id: number) => void;
+    onFollow?: (username: string) => void;
+    onShare?: (id: number) => void;
+    onUnlock?: (id: number) => void;
+    variant?: 'default' | 'compact' | 'featured';
+  }
+  ```
+</Accordion>
+
+<Accordion title="Features">
+  - **Author info** - Avatar, name, username, badges, followers
+  - **Metadata** - Date, visibility (public/private), audio indicator
+  - **Content** - Title, body, tags, emotional tone
+  - **Verified badge** - Chainlink CRE verification status
+  - **Canonical indicator** - Star icon for important stories
+  - **Paywall support** - Teaser + unlock button for premium content
+  - **Actions** - Like, comment, share, tip (with slider)
+  - **Emotional tone styling** - Left border color based on tone
+</Accordion>
+
+```tsx
+// Compact variant for grid views
+<StoryCard story={story} variant="compact" />
+
+// Full variant with actions
+<StoryCard
+  story={story}
+  variant="default"
+  onLike={handleLike}
+  onShare={handleShare}
+/>
+```
+
+---
+
+### StoryInsights
+
+**Location:** `components/StoryInsights.tsx`
+
+Displays AI-generated insights and metadata for a story.
+
+```tsx
+import { StoryInsights } from "@/components/StoryInsights";
+
+<StoryInsights metadata={story.metadata} />
+```
+
+**Displays:**
+- Emotional tone with color coding
+- Key themes extracted by AI
+- Brief insight summary
+- Word count and significance score
+
+---
+
+### VaultGuard
+
+**Location:** `components/vault/VaultGuard.tsx`
+
+Protects content that requires an unlocked local vault.
+
+<Accordion title="Props">
+  ```tsx
+  interface VaultGuardProps {
+    children: React.ReactNode;
+    optional?: boolean;        // Render children even if vault not set up
+    fallback?: React.ReactNode; // Custom UI when vault is locked
+  }
+  ```
+</Accordion>
+
+<Accordion title="Behavior">
+  - **Not set up** - Shows setup prompt (or renders children if `optional=true`)
+  - **Locked** - Prompts for PIN with unlock modal
+  - **Unlocked** - Renders children
+  - **Loading** - Shows spinner
+</Accordion>
+
+```tsx
+import { VaultGuard } from "@/components/vault/VaultGuard";
+
+function LocalStoriesPage() {
+  return (
+    <VaultGuard>
+      {/* Only rendered when vault is unlocked */}
+      <LocalStoriesList />
+    </VaultGuard>
+  );
+}
+```
+
+---
+
+## Provider Stack
+
+**Location:** `components/Provider.tsx`
+
+The Provider component wraps the entire app and provides context for Web3, theming, auth, and app state.
+
+### Stack Order (outer to inner)
+
+```tsx
+WagmiProvider              // Web3 wallet connection
+  → QueryClientProvider    // React Query for data fetching
+    → ThemeProvider         // Dark/light mode (next-themes)
+      → RainbowKitProvider  // Wallet UI (theme-aware)
+        → BackgroundProvider // Three.js background settings
+          → AuthProvider    // Authentication state
+            → AppContext    // App-wide state (user, balance, tokens)
+```
+
+<Accordion title="Provider Stack Source">
+  ```tsx components/Provider.tsx
+  export function Providers({ children }: { children: React.ReactNode }) {
+    return (
+      <WagmiProvider config={config}>
+        <QueryClientProvider client={queryClient}>
+          <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+            <ThemedRainbowKit>
+              <BackgroundProvider>
+                <AuthProvider>
+                  <AppInner>{children}</AppInner>
+                </AuthProvider>
+              </BackgroundProvider>
+            </ThemedRainbowKit>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </WagmiProvider>
+    );
+  }
+  ```
+</Accordion>
+
+### AppContext
+
+Provides app-wide user state derived from Wagmi hooks.
+
+```tsx
+interface AppContextType {
+  user: User | null;
+  isConnected: boolean;
+  isDisconnected: boolean;
+  connectWallet: () => void;
+  disconnectWallet: () => void;
+}
+
+interface User {
+  address: string;
+  addressDisplay: string;  // Truncated (0x1234...5678)
+  balance: string;         // ETH balance
+  storyTokens: number;     // $STORY token balance
+  badges: string[];        // Achievement badges
+}
+```
+
+---
+
+## Three.js Background Components
+
+**Location:** `components/three/`
+
+Dynamic 3D backgrounds for visual depth (loaded with `ssr: false`).
+
+<CardGroup cols={2}>
+  <Card title="BackgroundOrbs" icon="circle">
+    Animated gradient orbs using Three.js shader materials. Capability detection skips on weak devices.
+  </Card>
+
+  <Card title="BackgroundParticles" icon="sparkles">
+    Particle system with mouse interaction. DPR capped at 1.5 for performance.
+  </Card>
+</CardGroup>
+
+```tsx
+import dynamic from "next/dynamic";
+
+const GlobalBackgroundDynamic = dynamic(
+  () => import("@/components/three/GlobalBackground"),
+  { ssr: false }
+);
+```
+
+---
+
+## Email Templates
+
+**Location:** `components/emails/`
+
+React Email templates for transactional emails.
+
+- **WelcomeEmail.tsx** - Sent after signup (Google or wallet)
+- **WaitlistEmail.tsx** - Sent when user joins waitlist
+
+Used by `app/api/email/send/route.ts` via the Resend API.
+
+---
+
+## Pattern Components
+
+**Location:** `components/patterns/`
+
+Visualize recurring themes and patterns across stories (Phase 2 feature).
+
+- **DomainsView.tsx** - Life domain distribution (work, relationships, health, etc.)
+- **ThemesView.tsx** - Recurring themes over time
+- **MonthlySummary.tsx** - Monthly reflection aggregates
+
+---
+
+## Component Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Client vs Server" icon="server">
+    - Use `"use client"` for interactive components
+    - Keep page.tsx as server components
+    - Load Web3 hooks only in client components
+  </Card>
+
+  <Card title="Performance" icon="gauge">
+    - Lazy load Three.js with `dynamic(() => import(), { ssr: false })`
+    - Use `Skeleton` components during loading
+    - Memoize expensive calculations with `useMemo`
+  </Card>
+
+  <Card title="Styling" icon="paintbrush">
+    - Use Tailwind utility classes
+    - Custom colors via CSS variables (hsl)
+    - Dark mode via `dark:` prefix
+  </Card>
+
+  <Card title="Accessibility" icon="universal-access">
+    - Use semantic HTML
+    - Include ARIA labels on interactive elements
+    - Ensure keyboard navigation works
+  </Card>
+</CardGroup>
+
+---
+
+## Related
+
+<CardGroup cols={3}>
+  <Card title="Hooks" icon="link" href="/architecture/hooks">
+    Custom React hooks for vault, Web3, and data fetching
+  </Card>
+  <Card title="Routing" icon="route" href="/architecture/routing">
+    Next.js App Router structure and metadata
+  </Card>
+  <Card title="Services" icon="server" href="/architecture/services">
+    Backend service clients (Supabase, IPFS, Web3)
+  </Card>
+</CardGroup>

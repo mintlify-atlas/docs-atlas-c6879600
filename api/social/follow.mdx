@@ -1,0 +1,92 @@
+---
+title: 'Follow User'
+description: 'Toggle follow/unfollow for a user wallet'
+---
+
+## Endpoint
+
+<RequestExample>
+```bash cURL
+curl -X POST https://your-domain.com/api/social/follow \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "follower_wallet": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+    "followed_wallet": "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199"
+  }'
+```
+</RequestExample>
+
+## Request
+
+<ParamField body="follower_wallet" type="string" required>
+  The wallet address of the user performing the follow action (must be owned by authenticated user)
+</ParamField>
+
+<ParamField body="followed_wallet" type="string" required>
+  The wallet address of the user to follow/unfollow
+</ParamField>
+
+## Response
+
+<ResponseField name="isFollowing" type="boolean">
+  Current follow state after toggle (true = following, false = unfollowed)
+</ResponseField>
+
+<ResponseField name="followers_count" type="number">
+  Updated follower count for the followed user
+</ResponseField>
+
+<ResponseExample>
+```json Response
+{
+  "isFollowing": true,
+  "followers_count": 127
+}
+```
+</ResponseExample>
+
+<Note>
+  This endpoint performs an **atomic toggle**: if you're already following the user, they will be unfollowed, and vice versa.
+</Note>
+
+## Behavior
+
+- **Follow**: Inserts a new follow record, increments the followed user's follower count, and creates a notification
+- **Unfollow**: Deletes the follow record and decrements the follower count (floor at 0)
+- Validates that the authenticated user owns the `follower_wallet` address
+- Prevents self-following
+- Wallet addresses are case-insensitive (automatically lowercased)
+
+## Error Responses
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | Missing follower_wallet or followed_wallet | One or both wallet addresses missing |
+| 400 | Cannot follow yourself | `follower_wallet` and `followed_wallet` are the same |
+| 401 | Unauthorized | Invalid or missing Bearer token |
+| 403 | Forbidden | Authenticated user doesn't own `follower_wallet` |
+| 500 | Internal server error | Database operation failed |
+
+<Warning>
+  Wallet ownership is verified via the authentication system. You can only perform follow actions with wallets you own.
+</Warning>
+
+## Check Follow Status
+
+You can also check follow status without toggling:
+
+```bash
+curl -X GET "https://your-domain.com/api/social/follow?follower_wallet=0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb&followed_wallets=0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199,0xAnother..." \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+Returns:
+```json
+{
+  "following": {
+    "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199": true,
+    "0xAnother...": false
+  }
+}
+```

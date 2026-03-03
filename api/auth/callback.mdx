@@ -1,0 +1,77 @@
+---
+title: "OAuth Callback"
+api: "GET /api/auth/callback"
+description: "Handle OAuth redirect with code exchange and secure redirect"
+authMethod: "none"
+---
+
+OAuth callback endpoint for Google authentication. Exchanges authorization code for a session and redirects to a whitelisted destination.
+
+## Query Parameters
+
+<ParamField query="code" type="string" required>
+  Authorization code from OAuth provider
+</ParamField>
+
+<ParamField query="next" type="string" optional>
+  Redirect path after successful authentication (must be whitelisted)
+</ParamField>
+
+## Redirect Whitelist
+
+The following paths are allowed for the `next` parameter:
+
+- `/` (home)
+- `/profile`
+- `/record`
+- `/social`
+- `/library`
+- `/books`
+- `/tracker`
+
+Any path starting with these prefixes is also allowed (e.g., `/profile/settings`).
+
+## Behavior
+
+1. Validates the authorization code
+2. Exchanges code for Supabase session
+3. Validates redirect destination against whitelist
+4. Redirects to `next` parameter if valid, otherwise redirects to origin
+
+## Example Request
+
+```bash Browser
+https://estory.app/api/auth/callback?code=abc123&next=/profile
+```
+
+## Response
+
+This endpoint returns an HTTP redirect (302) rather than JSON:
+
+- **Success**: Redirects to `next` parameter or origin
+- **Error**: Redirects to origin with error query parameter
+
+### Error Query Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `auth_error=missing_code` | No authorization code provided |
+| `auth_error=exchange_failed` | Code exchange failed |
+| `auth_error=true` | Unexpected error occurred |
+
+## Security
+
+- Validates redirect destination against whitelist (prevents open redirect attacks)
+- Must be same origin as the application
+- Invalid redirects fall back to origin
+- Authorization code is single-use
+
+## Error Responses
+
+All errors result in redirects to the origin with query parameters:
+
+```
+https://estory.app/?auth_error=missing_code
+https://estory.app/?auth_error=exchange_failed
+https://estory.app/?auth_error=true
+```

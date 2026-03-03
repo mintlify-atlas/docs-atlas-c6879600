@@ -1,0 +1,459 @@
+---
+title: Blockchain Storage
+description: Permanent, tamper-proof story storage using IPFS and NFT minting on Base L2
+icon: globe
+---
+
+## Overview
+
+eStory uses IPFS (InterPlanetary File System) via Pinata to create permanent, content-addressed records of every story. Each story is hashed and pinned to IPFS, then optionally minted as an NFT on Base L2 (Ethereum Layer 2) for provable ownership and permanence.
+
+## IPFS Integration
+
+### Content Addressing
+
+Every story saved to eStory is automatically uploaded to IPFS:
+
+```typescript
+const ipfsMetadata = {
+  title: entryTitle,
+  content: transcribedText,
+  author: authInfo.wallet_address,
+  audio: audioUrl,
+  date: storyDate,
+  timestamp: actualCreatedDate,
+  is_public: isPublic,
+  app: "EStory DApp",
+};
+
+const ipfsResult = await ipfsService.uploadMetadata(ipfsMetadata, token);
+const ipfsHash = ipfsResult.hash; // e.g., "QmX1Y2Z3..."
+```
+
+**IPFS guarantees:**
+- **Content-addressed**: Same content always generates same hash (CID)
+- **Immutable**: Content cannot be changed after pinning
+- **Decentralized**: No single point of failure
+- **Permanent**: Pinata ensures content remains available
+
+<Info>
+  The IPFS hash is stored in the `stories` table (`ipfs_hash` column) for reference, but the canonical content lives on IPFS.
+</Info>
+
+### Pinata Service
+
+eStory uses Pinata's IPFS pinning service for reliable content hosting:
+
+**Service architecture:**
+```
+Client → /api/ipfs/upload → Pinata API → IPFS Network
+                                ↓
+                          pinata.cloud gateway
+                                ↓
+                          Public access via CID
+```
+
+#### IPFSService Class
+
+The `ipfsService` singleton handles all IPFS operations:
+
+```typescript
+class IPFSService {
+  private readonly gatewayUrl = process.env.NEXT_PUBLIC_IPFS_GATEWAY || 
+    'https://gateway.pinata.cloud/ipfs/';
+
+  async uploadMetadata(data: any, accessToken?: string): Promise<IPFSUploadResult> {
+    const formData = new FormData();
+    formData.append("metadata", JSON.stringify(data));
+
+    const response = await fetch("/api/ipfs/upload", {
+      method: "POST",
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      body: formData,
+    });
+
+    return await response.json(); // { hash, url }
+  }
+
+  getGatewayUrl(hash: string): string {
+    return `${this.gatewayUrl}${hash}`;
+  }
+}
+```
+
+**Upload types supported:**
+- **Metadata JSON** (stories, NFT metadata)
+- **Audio files** (WebM recordings)
+- **Image files** (profile pictures, cover art)
+
+### Metadata Structure
+
+Each story's IPFS metadata follows this schema:
+
+<ParamField path="title" type="string" required>
+  Story title as entered by user
+</ParamField>
+
+<ParamField path="content" type="string" required>
+  Full story text (transcribed or typed)
+</ParamField>
+
+<ParamField path="author" type="string" required>
+  Wallet address of story creator (0x...)
+</ParamField>
+
+<ParamField path="audio" type="string | null">
+  Supabase Storage URL for audio file (if recorded)
+</ParamField>
+
+<ParamField path="date" type="ISO 8601 string" required>
+  User-selected story date (supports backdating)
+</ParamField>
+
+<ParamField path="timestamp" type="ISO 8601 string" required>
+  Actual system upload time (immutable)
+</ParamField>
+
+<ParamField path="is_public" type="boolean" required>
+  Visibility flag (true = public feed, false = private)
+</ParamField>
+
+<ParamField path="app" type="string">
+  Application identifier ("EStory DApp")
+</ParamField>
+
+**Example IPFS metadata:**
+```json
+{
+  "title": "First Day at New Job",
+  "content": "Today was my first day at the startup. Met the team, got my laptop set up, and shipped my first bug fix by lunch. Feeling excited and nervous.",
+  "author": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+  "audio": "https://abc.supabase.co/storage/v1/object/public/audio/user123/story456.webm",
+  "date": "2026-03-01T00:00:00Z",
+  "timestamp": "2026-03-03T14:32:18Z",
+  "is_public": true,
+  "app": "EStory DApp"
+}
+```
+
+### Gateway Access
+
+IPFS content is publicly accessible via HTTP gateways:
+
+**Pinata gateway** (default):
+```
+https://gateway.pinata.cloud/ipfs/{CID}
+```
+
+**Alternative gateways** (fallback):
+```
+https://ipfs.io/ipfs/{CID}
+https://cloudflare-ipfs.com/ipfs/{CID}
+```
+
+<Warning>
+  Gateway availability varies. Production apps should use dedicated Pinata gateways with custom domains for reliability.
+</Warning>
+
+## NFT Minting (StoryNFT)
+
+### Contract Architecture
+
+The `StoryNFT` contract (deployed on Base Sepolia) allows users to mint their stories as ERC721 NFTs:
+
+**Contract details:**
+- **Standard**: ERC721 with URI storage
+- **Extensions**: AccessControl, ERC2981 (royalties)
+- **Network**: Base Sepolia (testnet), Base Mainnet (production)
+- **Address**: `0x6D37ebc5...` (see `lib/contracts.ts`)
+
+#### Contract Features
+
+<CodeGroup>
+```solidity Minting Function
+function mintBook(string memory uri) external payable {
+  require(msg.value >= mintFee, "Insufficient mint fee");
+  uint256 tokenId = ++_nextTokenId;
+  _safeMint(msg.sender, tokenId);
+  _setTokenURI(tokenId, uri); // IPFS CID
+  emit NFTMinted(tokenId, msg.sender, uri, "BOOK");
+}
+```
+
+```solidity Access Control
+bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+
+// Weekly winner mint (admin-only, no fee)
+function mintWeeklyWinner(address winner, string memory uri) 
+  external 
+  onlyRole(MINTER_ROLE) 
+{
+  uint256 tokenId = ++_nextTokenId;
+  _safeMint(winner, tokenId);
+  _setTokenURI(tokenId, uri);
+  emit NFTMinted(tokenId, winner, uri, "WEEKLY_WINNER");
+}
+```
+
+```solidity Royalties (ERC2981)
+constructor(address defaultAdmin) ERC721("EStory Collections", "ESTORY") {
+  _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
+  _grantRole(MINTER_ROLE, defaultAdmin);
+  
+  // 5% royalty on secondary sales
+  _setDefaultRoyalty(defaultAdmin, 500);
+}
+```
+
+```solidity Fee Management
+uint256 public mintFee = 0.001 ether;
+
+function setMintFee(uint256 _fee) external onlyRole(DEFAULT_ADMIN_ROLE) {
+  mintFee = _fee;
+}
+
+function withdraw() external onlyRole(DEFAULT_ADMIN_ROLE) {
+  uint256 balance = address(this).balance;
+  require(balance > 0, "No balance to withdraw");
+  (bool success, ) = payable(msg.sender).call{value: balance}("");
+  require(success, "Withdrawal failed");
+}
+```
+</CodeGroup>
+
+### Minting Flow
+
+<Steps>
+  <Step title="Prepare Metadata">
+    Create NFT metadata JSON with story details, upload to IPFS via Pinata.
+  </Step>
+  
+  <Step title="Get IPFS URI">
+    Pinata returns CID (e.g., `ipfs://QmX1Y2Z3...` or `https://gateway.pinata.cloud/ipfs/QmX1Y2Z3...`).
+  </Step>
+  
+  <Step title="Call mintBook()">
+    User connects wallet, approves 0.001 ETH fee, calls `mintBook(uri)` on StoryNFT contract.
+  </Step>
+  
+  <Step title="Receive NFT">
+    Contract mints ERC721 token, assigns to user's wallet, emits `NFTMinted` event.
+  </Step>
+  
+  <Step title="View on OpenSea">
+    NFT appears in user's wallet and on OpenSea/Rarible with metadata from IPFS URI.
+  </Step>
+</Steps>
+
+### Frontend Integration (Wagmi)
+
+The `useStoryNFT` hook simplifies NFT minting:
+
+```typescript
+import { useStoryNFT } from "@/app/hooks/useStoryNFT";
+
+const { mintBook, isPending, isSuccess, error } = useStoryNFT();
+
+// Mint a story as NFT
+const handleMint = async () => {
+  // 1. Upload metadata to IPFS
+  const metadata = {
+    name: story.title,
+    description: story.content,
+    image: coverImageUrl,
+    attributes: [
+      { trait_type: "Author", value: story.author_wallet },
+      { trait_type: "Date", value: story.story_date },
+      { trait_type: "Word Count", value: story.content.length },
+    ],
+  };
+  
+  const { hash: metadataCID } = await ipfsService.uploadMetadata(metadata, token);
+  const uri = `ipfs://${metadataCID}`;
+  
+  // 2. Mint NFT with metadata URI
+  await mintBook({
+    uri,
+    value: parseEther("0.001"), // Mint fee
+  });
+};
+```
+
+<Info>
+  The mint fee (0.001 ETH) prevents spam and covers gas costs. Admin can update via `setMintFee()`.
+</Info>
+
+### NFT Metadata Standards
+
+NFT metadata follows OpenSea standards for rich display:
+
+```json
+{
+  "name": "My Life Story - Chapter 1",
+  "description": "A collection of journal entries from January 2026.",
+  "image": "ipfs://QmCoverImageHash...",
+  "external_url": "https://estory.app/books/{tokenId}",
+  "attributes": [
+    { "trait_type": "Author", "value": "0x742d35Cc..." },
+    { "trait_type": "Entry Count", "value": 15 },
+    { "trait_type": "Period", "value": "January 2026" },
+    { "trait_type": "Total Words", "value": 12500 },
+    { "display_type": "date", "trait_type": "Created", "value": 1735689600 }
+  ]
+}
+```
+
+**Supported trait types:**
+- `string` - Text values (author, period)
+- `number` - Numeric values (entry count, word count)
+- `date` - Unix timestamps (created date)
+- `boost_percentage` - Numeric traits that boost item value
+- `boost_number` - Absolute numeric boosts
+
+## Permanence Guarantees
+
+### IPFS Pinning
+
+**Pinata pinning tiers:**
+
+| Tier | Storage | Bandwidth | Gateways | Cost |
+|------|---------|-----------|----------|------|
+| Free | 1 GB | 1 GB/month | Public | $0 |
+| Picnic | 50 GB | 50 GB/month | Dedicated | $20/mo |
+| Fiesta | 500 GB | 500 GB/month | Dedicated + CDN | $200/mo |
+
+**Redundancy:**
+- **3+ nodes** - Content replicated across Pinata's IPFS nodes
+- **Geographic distribution** - Nodes in multiple regions
+- **Auto-recovery** - Failed nodes trigger re-pinning
+
+<Tip>
+  Production deployments should use Pinata's dedicated gateway with custom domain (e.g., `ipfs.estory.app`) for better reliability and performance.
+</Tip>
+
+### Blockchain Permanence
+
+Once minted as an NFT, story metadata is permanently recorded on Base L2:
+
+**On-chain data:**
+- Token ID → IPFS URI mapping (immutable)
+- Ownership history (transferable)
+- Mint timestamp (block number)
+- Royalty information (ERC2981)
+
+**Off-chain data (IPFS):**
+- Full story content
+- Audio files
+- Images
+- Metadata attributes
+
+<Warning>
+  **Key distinction**: The blockchain stores the IPFS URI, not the content itself. Content lives on IPFS and must remain pinned for NFT metadata to resolve.
+</Warning>
+
+### Recovery & Backup
+
+If Pinata becomes unavailable, content can be re-pinned from:
+
+1. **Local Supabase backup** - Full story text in `stories` table
+2. **User's local vault** - Encrypted copy in IndexedDB (if enabled)
+3. **Other IPFS nodes** - Content propagates across IPFS network
+4. **Archive.org** - Submit CIDs to Internet Archive for preservation
+
+## Privacy Considerations
+
+### Public vs Private Stories
+
+IPFS uploads happen for **all stories**, but privacy is controlled at the application level:
+
+<CardGroup cols={2}>
+  <Card title="Public Stories" icon="unlock">
+    - IPFS hash visible in `stories` table
+    - Content accessible via gateway URLs
+    - Appears in public feed
+    - Can be minted as NFTs
+  </Card>
+  
+  <Card title="Private Stories" icon="lock">
+    - IPFS hash stored but not exposed in API
+    - Gateway URL not shared publicly
+    - `is_public: false` in metadata
+    - Still immutably stored on IPFS
+  </Card>
+</CardGroup>
+
+<Warning>
+  **Important**: Private stories on IPFS are "obscured" (hard to discover) but not encrypted. Anyone with the CID can access the content. For true privacy, use the [Local Vault](/features/local-vault) feature.
+</Warning>
+
+### Encryption Option
+
+For maximum privacy, encrypt content before uploading to IPFS:
+
+```typescript
+import { encryptString, getDEK } from "@/lib/vault";
+
+// Encrypt story content with user's vault DEK
+const dek = getDEK(userId);
+const { ciphertext, iv } = await encryptString(storyContent, dek);
+
+// Upload encrypted version to IPFS
+const encryptedMetadata = {
+  ...metadata,
+  content: ciphertext,
+  content_iv: iv,
+  encrypted: true,
+};
+
+const { hash } = await ipfsService.uploadMetadata(encryptedMetadata, token);
+```
+
+**Trade-off**: NFTs with encrypted content cannot display story previews in marketplaces.
+
+## Integration Points
+
+<CardGroup cols={2}>
+  <Card title="Voice Journaling" icon="mic" href="/features/voice-journaling">
+    Audio URLs are included in IPFS metadata for permanent audio storage
+  </Card>
+  
+  <Card title="AI Analysis" icon="brain" href="/features/ai-analysis">
+    Story metadata (themes, entities) can be optionally added to NFT attributes
+  </Card>
+  
+  <Card title="Local Vault" icon="lock" href="/features/local-vault">
+    Encrypted stories can be uploaded to IPFS for privacy-preserving NFTs
+  </Card>
+  
+  <Card title="Social Feed" icon="users" href="/features/social-monetization">
+    Public stories with IPFS hashes appear in the social feed with verifiable links
+  </Card>
+</CardGroup>
+
+## Implementation Reference
+
+**Source files:**
+- `app/utils/ipfsService.ts:1-87` - IPFS upload service
+- `contracts/StoryNFT.sol:1-75` - NFT minting contract
+- `app/api/ipfs/upload/route.ts` - IPFS API endpoint
+- `app/hooks/useStoryNFT.ts` - NFT minting hook
+- `lib/contracts.ts` - Contract addresses and ABIs
+
+**Environment variables:**
+```bash
+NEXT_PUBLIC_IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs/
+PINATA_API_KEY=your_api_key_here
+PINATA_SECRET_KEY=your_secret_key_here
+```
+
+**Deployment commands:**
+```bash
+# Compile contracts
+npx hardhat compile
+
+# Deploy to Base Sepolia
+npx hardhat run scripts/deploy.ts --network baseSepolia
+
+# Verify on Basescan
+npx hardhat verify --network baseSepolia {CONTRACT_ADDRESS} {CONSTRUCTOR_ARGS}
+```

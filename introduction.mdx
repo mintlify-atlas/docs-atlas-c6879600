@@ -1,0 +1,122 @@
+---
+title: Introduction to eStory
+description: AI-powered Web3 voice journaling dApp that transforms personal narratives into blockchain permanence
+---
+
+# Speak Your Story, Mint Your Legacy
+
+eStory is an innovative AI-powered Web3 application that empowers you to chronicle your daily life through voice journaling, immortalize your personal narratives on the blockchain, and monetize your stories in a decentralized ecosystem.
+
+Built on Base (Ethereum Layer 2), eStory ensures low-cost, fast transactions while maintaining Ethereum's security. In a world where history has often been manipulated by conquerors and dominating empires, eStory reclaims the power of authentic storytelling.
+
+## What is eStory?
+
+eStory transforms voice into verified, permanent records on the blockchain. Record your thoughts naturally through speech, let AI enhance and analyze your stories, then preserve them forever with cryptographic proof of authenticity.
+
+Your stories are truly yours—owned, monetized, and preserved on an immutable ledger that no one can censor or alter.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Voice-to-Text Journaling" icon="microphone">
+    Record stories using browser-based audio capture with AI-powered transcription powered by ElevenLabs Scribe. Just speak naturally—no need to write.
+  </Card>
+  
+  <Card title="AI Analysis & Enhancement" icon="sparkles">
+    Get creative prompts, grammar polishing, and AI-generated insights using Google Gemini 2.5 Flash. Automatic extraction of themes, emotions, and cognitive metadata from your stories.
+  </Card>
+  
+  <Card title="Blockchain Permanence" icon="shield">
+    Mint stories as NFTs on Base (Ethereum L2) with IPFS storage via Pinata. Your narratives become immutable, tamper-proof digital artifacts with cryptographic verification.
+  </Card>
+  
+  <Card title="Local Vault Encryption" icon="lock">
+    Optional client-side AES-256-GCM encryption with PBKDF2 key derivation (100K iterations). Your PIN never leaves your device—stories encrypted in IndexedDB with Data Encryption Keys (DEK).
+  </Card>
+  
+  <Card title="Monetization Suite" icon="coins">
+    Earn $STORY tokens from likes, tips, and paywall sales. Support creators directly or build your own audience. Compile stories into digital books and mint as NFTs with ERC2981 royalties.
+  </Card>
+  
+  <Card title="Verifiable Metrics" icon="badge-check">
+    Chainlink CRE (Compute Runtime Environment) provides privacy-preserving on-chain attestation. Quality tiers, significance scores, and themes verified by decentralized oracle network.
+  </Card>
+</CardGroup>
+
+## Why eStory?
+
+History is written by the victors, but your story deserves to be heard unedited. eStory counters narrative manipulation by giving individuals the tools to create, own, and profit from their personal histories on an immutable blockchain.
+
+Whether it's a daily reflection, a life milestone, or a cultural tale, your voice becomes part of an unbreakable digital archive—all powered by the efficiency of Base Layer 2.
+
+### Use Cases
+
+- **Daily Voice Journaling**: AI transcription eliminates the friction of writing
+- **Mind Decluttering**: AI-detected themes, patterns, and emotional insights across stories
+- **Life Story Compilation**: Publish books with permanent blockchain records
+- **Creator Monetization**: Earn passive income from story engagement and NFT sales
+- **Truth Preservation**: Tamper-proof records for activists, historians, and marginalized communities
+- **Community Building**: Engage audiences with social feeds, likes, tips, and comments
+
+## Technology Stack
+
+### Frontend
+- **Next.js 15.5.9** with React 19 and TypeScript
+- **Tailwind CSS 4** for responsive, modern UI with dark/light mode
+- **Framer Motion** for smooth animations and transitions
+- **shadcn/ui** for accessible, customizable components
+
+### Blockchain & Web3
+- **Wagmi 2.17 + RainbowKit 2.2** for seamless wallet connections
+- **Viem 2.38** for efficient blockchain interactions
+- **Base Sepolia** (Chain ID: 84532) for low-cost L2 transactions
+- **Smart Contracts**: ERC20 $STORY token, StoryProtocol (tips/paywall), StoryNFT (ERC721 books)
+
+### Backend & Database
+- **Supabase** (PostgreSQL) for real-time data and authentication
+- **Supabase Storage** for audio files and media
+- **Next.js API Routes** with Bearer token auth and rate limiting
+
+### AI & External Services
+- **ElevenLabs Scribe** for accurate voice transcription
+- **Google Gemini 2.5 Flash** for text enhancement and story analysis
+- **Chainlink CRE** for verifiable off-chain compute with on-chain attestation
+- **Pinata IPFS** for decentralized file storage
+- **Resend** for transactional emails
+
+### Security
+- **Dual Authentication**: Google OAuth or Web3 wallet with nonce-based signing
+- **Rate Limiting**: Route-specific limits (AI: 10/min, Auth: 20/min, Default: 60/min)
+- **Security Headers**: CSP, X-Frame-Options DENY, X-Content-Type-Options nosniff
+- **Local Vault**: AES-256-GCM encryption at rest in IndexedDB (PIN-derived KEK wraps DEK)
+
+## Smart Contracts (Base Sepolia)
+
+| Contract | Address | Purpose |
+|----------|---------|----------|
+| **eStoryToken** | `0xf9eDD76B55F58Bf4E8Ae2A90a1D6d8d44dfA74BC` | ERC20 $STORY token (100M max supply) |
+| **StoryProtocol** | `0xA51a4cA00cC4C81A5F7cB916D0BFa1a4aD6f4a71` | Tips & paywall payments |
+| **StoryNFT** | `0x6D37ebc5eAEF37ecC888689f295D114187933342` | ERC721 story books (0.001 ETH mint fee) |
+| **PrivateVerifiedMetrics** | `0x158e08BCD918070C1703E8b84a6E2524D2AE5e4c` | Privacy-preserving CRE metrics |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+    Get from zero to your first recorded story in 5 minutes
+  </Card>
+  
+  <Card title="Developer Installation" icon="code" href="/installation">
+    Clone the repo and run eStory locally with full smart contract deployment
+  </Card>
+</CardGroup>
+
+---
+
+<Note>
+  **Current Phase**: Phase 1.5 Complete (Security Hardening), CRE Integration Complete, SEO Overhaul Complete, Local Vault Complete—Ready for Phase 2 (Patterns & Discovery).
+</Note>
+
+**Made with ❤️ by the eStory Team**
+
+Preserve your truth. Mint your legacy. Speak Your Story.

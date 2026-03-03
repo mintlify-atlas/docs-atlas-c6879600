@@ -1,0 +1,471 @@
+---
+title: "IPFS Storage via Pinata"
+description: "Permanent decentralized storage for story NFTs using IPFS and Pinata pinning service"
+---
+
+## Overview
+
+The IPFS integration provides permanent, decentralized storage for eStory content via [Pinata](https://pinata.cloud), a pinning service that ensures files remain available on the IPFS network.
+
+**Use Cases**:
+- **NFT Metadata**: Story book metadata for ERC721 tokens
+- **Audio Files**: Permanent voice recordings (optional, primary storage is Supabase)
+- **Images**: Book covers, profile pictures
+
+## Architecture
+
+```
+Client → IPFSService → /api/ipfs/upload → Pinata API → IPFS Network
+                                ↓
+                         CID Generated
+                                ↓
+                    Gateway URL Returned
+```
+
+### IPFS Concepts
+
+- **CID (Content Identifier)**: Cryptographic hash of the file content (e.g., `QmXyz...` or `bafybeiabc...`)
+- **Pinning**: Keeping a file available on the IPFS network (prevents garbage collection)
+- **Gateway**: HTTP bridge to access IPFS content via URL
+
+## IPFSService Class
+
+**File**: `/app/utils/ipfsService.ts`
+
+The `IPFSService` is a singleton that handles all IPFS uploads:
+
+```typescript
+import { ipfsService } from '@/app/utils/ipfsService';
+
+const { hash, url } = await ipfsService.uploadMetadata(data, accessToken);
+```
+
+### Methods
+
+#### uploadMetadata
+
+Upload JSON metadata (for NFTs):
+
+```typescript
+interface IPFSUploadResult {
+  hash: string; // CID
+  url: string;  // Gateway URL
+}
+
+async uploadMetadata(
+  data: any, 
+  accessToken?: string | null
+): Promise<IPFSUploadResult>
+```
+
+**Example**:
+```typescript
+const metadata = {
+  name: "My Story Collection",
+  description: "A collection of personal narratives",
+  stories: [
+    { title: "First Story", ipfs_hash: "QmAbc..." },
+    { title: "Second Story", ipfs_hash: "QmDef..." },
+  ],
+};
+
+const result = await ipfsService.uploadMetadata(metadata, token);
+// result.hash: "QmXyz..."
+// result.url: "https://gateway.pinata.cloud/ipfs/QmXyz..."
+```
+
+#### uploadFile
+
+Upload a physical file (audio, image):
+
+```typescript
+async uploadFile(
+  file: Blob, 
+  accessToken?: string | null
+): Promise<IPFSUploadResult>
+```
+
+**Example**:
+```typescript
+const audioBlob = new Blob([audioData], { type: 'audio/webm' });
+const result = await ipfsService.uploadFile(audioBlob, token);
+```
+
+#### getGatewayUrl
+
+Generate a gateway URL from a CID:
+
+```typescript
+function getGatewayUrl(hash: string): string
+```
+
+**Example**:
+```typescript
+const url = ipfsService.getGatewayUrl('QmXyz...');
+// "https://gateway.pinata.cloud/ipfs/QmXyz..."
+```
+
+## API Endpoint
+
+### POST /api/ipfs/upload
+
+**Authentication**: Bearer token required  
+**Rate Limit**: Inherited from middleware (10 req/min for AI routes)
+
+#### Request Format
+
+**Multipart Form Data**:
+
+```typescript
+const formData = new FormData();
+
+// Option 1: Upload a file
+formData.append('file', audioBlob);
+
+// Option 2: Upload metadata (JSON string)
+formData.append('metadata', JSON.stringify(data));
+
+const response = await fetch('/api/ipfs/upload', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` },
+  body: formData,
+});
+```
+
+<Note>
+You must provide **either** `file` or `metadata`, not both.
+</Note>
+
+#### Response Format
+
+**Success (200)**
+```json
+{
+  "hash": "QmXyz123abc...",
+  "url": "https://gateway.pinata.cloud/ipfs/QmXyz123abc..."
+}
+```
+
+**Error (400/500)**
+```json
+{
+  "error": "Human-readable error message"
+}
+```
+
+## File Validation
+
+### Allowed File Types
+
+```typescript
+const ALLOWED_MIME_PREFIXES = ["image/", "audio/", "application/json"];
+```
+
+- **Images**: `image/jpeg`, `image/png`, `image/gif`, `image/webp`
+- **Audio**: `audio/webm`, `audio/wav`, `audio/mp3`, `audio/mpeg`
+- **JSON**: `application/json`
+
+### Size Limits
+
+```typescript
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+
+if (file.size > MAX_FILE_SIZE) {
+  return NextResponse.json(
+    { error: "File too large. Maximum size is 50MB." },
+    { status: 400 }
+  );
+}
+```
+
+<Info>
+Pinata's default plan supports up to 1 GB of total storage. Monitor usage in the Pinata dashboard.
+</Info>
+
+## Pinata API Integration
+
+The API route uses Pinata's `pinFileToIPFS` endpoint:
+
+```typescript
+const pinataFormData = new FormData();
+pinataFormData.append('file', file); // or metadata blob
+pinataFormData.append('pinataMetadata', JSON.stringify({ name: filename }));
+pinataFormData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+
+const res = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${process.env.PINATA_JWT}` },
+  body: pinataFormData,
+});
+
+const json = await res.json();
+const ipfsHash = json.IpfsHash; // CIDv1 format
+```
+
+### CID Versions
+
+- **CIDv0**: Base58-encoded (e.g., `QmXyz...`)
+- **CIDv1**: Multibase-encoded (e.g., `bafybeiabc...`)
+
+eStory uses **CIDv1** for forward compatibility.
+
+## Permanent Storage
+
+### Pinning
+
+Pinata automatically "pins" uploaded files, ensuring they remain available:
+
+- Files are replicated across multiple IPFS nodes
+- Content is cached at Pinata's dedicated nodes
+- Files persist even if the original uploader goes offline
+
+### Unpinning (Manual)
+
+To remove files from Pinata (frees storage quota):
+
+```bash
+curl -X DELETE https://api.pinata.cloud/pinning/unpin/{CID} \
+  -H "Authorization: Bearer YOUR_JWT"
+```
+
+<Note>
+Unpinning does **not** delete the file from IPFS—it only removes Pinata's copy. Other nodes may still host the file.
+</Note>
+
+## Gateway URLs
+
+IPFS content is accessed via HTTP gateways:
+
+### Default Gateway (Pinata)
+
+```typescript
+const gatewayUrl = process.env.NEXT_PUBLIC_IPFS_GATEWAY || 
+  'https://gateway.pinata.cloud/ipfs/';
+
+const url = `${gatewayUrl}${hash}`;
+// "https://gateway.pinata.cloud/ipfs/QmXyz..."
+```
+
+### Alternative Gateways
+
+- **Cloudflare**: `https://cloudflare-ipfs.com/ipfs/{CID}`
+- **IPFS.io**: `https://ipfs.io/ipfs/{CID}` (public, slower)
+- **Dedicated Gateway**: Pinata offers custom domains (paid plans)
+
+### Gateway Performance
+
+| Gateway | Speed | Reliability | Cost |
+|---------|-------|-------------|------|
+| Pinata Dedicated | Fast | High | Paid |
+| Cloudflare | Fast | High | Free |
+| IPFS.io | Slow | Medium | Free |
+
+<Info>
+For production, configure a custom gateway domain via Pinata or Cloudflare for consistent branding and performance.
+</Info>
+
+## Use Cases in eStory
+
+### 1. NFT Book Metadata
+
+When minting a Story Book NFT:
+
+```typescript
+import { ipfsService } from '@/app/utils/ipfsService';
+import { useStoryNFT } from '@/app/hooks/useStoryNFT';
+
+const handleMintBook = async () => {
+  // 1. Upload metadata to IPFS
+  const metadata = {
+    name: bookTitle,
+    description: bookDescription,
+    image: coverImageUrl, // Already on IPFS
+    stories: selectedStories.map(s => ({
+      title: s.title,
+      ipfs_hash: s.ipfs_hash,
+    })),
+  };
+  
+  const { url: metadataUri } = await ipfsService.uploadMetadata(
+    metadata, 
+    accessToken
+  );
+  
+  // 2. Mint NFT with IPFS URI
+  const { mintBook } = useStoryNFT();
+  await mintBook(metadataUri);
+};
+```
+
+### 2. Permanent Audio Backup (Optional)
+
+For users who want permanent voice recording backups:
+
+```typescript
+const handleSaveWithIPFS = async (audioBlob: Blob) => {
+  // Primary storage: Supabase
+  const supabaseUrl = await uploadToSupabase(audioBlob);
+  
+  // Optional backup: IPFS
+  const { hash: ipfsHash } = await ipfsService.uploadFile(audioBlob, token);
+  
+  await supabase.from('stories').insert({
+    audio_url: supabaseUrl,
+    ipfs_hash: ipfsHash, // Backup reference
+  });
+};
+```
+
+### 3. Public Story Sharing
+
+Share a story via immutable IPFS link:
+
+```typescript
+const handleShareStory = async (storyId: string) => {
+  const story = await fetchStory(storyId);
+  
+  const shareable = {
+    title: story.title,
+    content: story.content,
+    author: story.username,
+    created_at: story.created_at,
+  };
+  
+  const { url } = await ipfsService.uploadMetadata(shareable, token);
+  
+  // Share permanent link: https://gateway.pinata.cloud/ipfs/Qm...
+  await navigator.clipboard.writeText(url);
+  toast.success('Permanent link copied!');
+};
+```
+
+## Security
+
+The upload endpoint follows eStory's security model:
+
+```
+Layer 4: No ownership check (user uploads their own content)
+Layer 3: Input validation (file size, MIME type)
+Layer 2: Bearer token auth (validateAuthOrReject)
+Layer 1: Rate limiting (inherited from middleware)
+Layer 0: Security headers (CSP, X-Frame-Options)
+```
+
+### Authentication
+
+```typescript
+import { validateAuthOrReject, isAuthError } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  const authResult = await validateAuthOrReject(req);
+  if (isAuthError(authResult)) return authResult;
+  // ...
+}
+```
+
+### Content Privacy
+
+<Note>
+**CRITICAL**: IPFS content is **public and permanent**. Never upload private stories or sensitive data to IPFS without encryption.
+</Note>
+
+For private content:
+1. Encrypt the file client-side before upload
+2. Store decryption key separately (not on IPFS)
+3. Or use Supabase storage instead (supports RLS)
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# .env.local
+PINATA_JWT=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+NEXT_PUBLIC_IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs/
+```
+
+Get your JWT from the [Pinata Dashboard](https://app.pinata.cloud/keys).
+
+### Pinata Configuration
+
+**Plan Limits**:
+- **Free**: 1 GB storage, 100 GB bandwidth/month
+- **Starter**: 10 GB storage, 500 GB bandwidth/month
+- **Growth**: 100 GB storage, 5 TB bandwidth/month
+
+## Cost Optimization
+
+### Strategies
+
+1. **Selective Pinning**: Only pin NFT metadata and public content, not all audio files
+2. **Compression**: Compress images and audio before upload
+3. **Deduplication**: Check if content already exists (same CID) before uploading
+4. **Unpinning**: Periodically remove unused files
+
+### Monitoring Usage
+
+Check usage in Pinata Dashboard → **Billing** → **Usage**:
+- Total storage used
+- Bandwidth consumed
+- Number of pins
+
+## Testing
+
+### Manual Testing
+
+```bash
+# Upload metadata
+curl -X POST http://localhost:3000/api/ipfs/upload \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F 'metadata={"name":"Test","description":"Test metadata"}'
+
+# Upload file
+curl -X POST http://localhost:3000/api/ipfs/upload \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F 'file=@test-audio.webm'
+```
+
+### Unit Tests
+
+Mock the Pinata API:
+
+```typescript
+global.fetch = vi.fn((url) => {
+  if (url.includes('pinata.cloud')) {
+    return Promise.resolve({
+      ok: true,
+      json: async () => ({ IpfsHash: 'QmMockedHash123' }),
+    });
+  }
+});
+```
+
+## Troubleshooting
+
+### Upload Failures
+
+**Symptom**: `500 Internal Server Error`  
+**Causes**:
+- Invalid `PINATA_JWT`
+- Storage quota exceeded
+- Network timeout
+
+**Solution**: Check Pinata dashboard for API key validity and quota.
+
+### Gateway Timeouts
+
+**Symptom**: Slow or failed gateway requests  
+**Solution**: Switch to a faster gateway (Cloudflare) or use Pinata's dedicated gateway.
+
+### CID Mismatch
+
+**Symptom**: Different CID returned for same content  
+**Cause**: CID version mismatch (v0 vs v1)  
+**Solution**: Use `cidVersion: 1` in Pinata options (already configured).
+
+## References
+
+- [IPFS Documentation](https://docs.ipfs.tech)
+- [Pinata Documentation](https://docs.pinata.cloud)
+- [Blockchain Storage Feature](/features/blockchain-storage)
+- [Architecture: Services](/architecture/services)

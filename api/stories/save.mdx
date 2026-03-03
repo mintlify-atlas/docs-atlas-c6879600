@@ -1,0 +1,161 @@
+---
+title: "Save Story"
+api: "POST /api/journal/save"
+description: "Create a new story with optional audio and trigger AI analysis"
+authMethod: "bearer"
+---
+
+Saves a new journal entry/story to the database. Automatically triggers background AI analysis and CRE (Chainlink Compute Runtime Environment) verification workflows.
+
+## Request Body
+
+<ParamField body="title" type="string" optional>
+  Story title (defaults to "Journal Entry [date]" if not provided)
+</ParamField>
+
+<ParamField body="content" type="string" required>
+  Story text content (cannot be empty or whitespace only)
+</ParamField>
+
+<ParamField body="audioUrl" type="string" optional>
+  IPFS or storage URL for audio recording
+</ParamField>
+
+<ParamField body="mood" type="string" optional>
+  Mood/emotion indicator (defaults to `"neutral"`)
+</ParamField>
+
+<ParamField body="tags" type="array" optional>
+  Array of tag strings for categorization
+</ParamField>
+
+<ParamField body="hasAudio" type="boolean" optional>
+  Whether the story has an associated audio file
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Operation result
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  Created story object
+  <Expandable title="properties">
+    <ResponseField name="id" type="string">
+      Story UUID
+    </ResponseField>
+    <ResponseField name="author_id" type="string">
+      Author's user UUID
+    </ResponseField>
+    <ResponseField name="author_wallet" type="string">
+      Author's wallet address
+    </ResponseField>
+    <ResponseField name="title" type="string">
+      Story title
+    </ResponseField>
+    <ResponseField name="content" type="string">
+      Story text content
+    </ResponseField>
+    <ResponseField name="mood" type="string">
+      Mood indicator
+    </ResponseField>
+    <ResponseField name="tags" type="array">
+      Array of tags
+    </ResponseField>
+    <ResponseField name="has_audio" type="boolean">
+      Whether audio is attached
+    </ResponseField>
+    <ResponseField name="audio_url" type="string" optional>
+      Audio file URL
+    </ResponseField>
+    <ResponseField name="likes" type="number">
+      Initial like count (0)
+    </ResponseField>
+    <ResponseField name="comments_count" type="number">
+      Initial comment count (0)
+    </ResponseField>
+    <ResponseField name="shares" type="number">
+      Initial share count (0)
+    </ResponseField>
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Success message
+</ResponseField>
+
+## Example Request
+
+```bash cURL
+curl -X POST "https://estory.app/api/journal/save" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "title": "My Mountain Hike",
+    "content": "Today I climbed Mount Rainier. The view was breathtaking and I felt accomplished.",
+    "mood": "proud",
+    "tags": ["hiking", "adventure", "nature"],
+    "hasAudio": true,
+    "audioUrl": "ipfs://QmX..."
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "7c8d9e0f-1234-5678-9abc-def012345678",
+    "author_id": "550e8400-e29b-41d4-a716-446655440000",
+    "author_wallet": "0x742d35cc6634c0532925a3b844bc9e7595f0beb",
+    "title": "My Mountain Hike",
+    "content": "Today I climbed Mount Rainier. The view was breathtaking and I felt accomplished.",
+    "mood": "proud",
+    "tags": ["hiking", "adventure", "nature"],
+    "has_audio": true,
+    "audio_url": "ipfs://QmX...",
+    "likes": 0,
+    "comments_count": 0,
+    "shares": 0,
+    "created_at": "2026-03-03T10:30:00.000Z"
+  },
+  "message": "Journal entry saved successfully!"
+}
+```
+
+## Background Processes
+
+Saving a story triggers two asynchronous workflows:
+
+### 1. AI Analysis (`/api/ai/analyze`)
+- Extracts themes, entities, emotional tone
+- Populates `story_metadata` table
+- Non-blocking (fire-and-forget)
+
+### 2. CRE Verification (`/api/cre/trigger`)
+- Chainlink DON attests to AI analysis integrity
+- Writes privacy-preserving proof to `PrivateVerifiedMetrics` contract
+- Stores full metrics off-chain (Supabase)
+- Non-blocking (fire-and-forget)
+
+<Info>
+Both background processes are non-critical. If they fail, they can be retried later without affecting the story creation.
+</Info>
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message
+</ResponseField>
+
+| Status Code | Description |
+|-------------|-------------|
+| 400 | Content is required |
+| 401 | Unauthorized (missing or invalid token) |
+| 404 | User not found |
+| 500 | Failed to save journal entry |

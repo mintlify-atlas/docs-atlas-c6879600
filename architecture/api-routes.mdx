@@ -1,0 +1,660 @@
+---
+title: API Routes
+description: Learn about eStory's API route structure, organization by feature, authentication patterns, and HTTP method conventions.
+---
+
+## Overview
+
+eStory's API routes are organized by feature domain and follow RESTful conventions. All routes require Bearer token authentication and are protected by rate limiting middleware.
+
+**Location:** `app/api/`
+
+---
+
+## Route Organization
+
+Routes are grouped by feature domain for better maintainability:
+
+```
+app/api/
+├── ai/                  # AI services (transcription, enhancement, analysis)
+├── auth/                # Authentication (wallet + Google OAuth)
+├── stories/             # Story CRUD operations
+├── social/              # Social features (likes, follows)
+├── cre/                 # Chainlink CRE verification
+├── ipfs/                # IPFS uploads (via Pinata)
+├── email/               # Email sending (via Resend)
+├── notifications/       # User notifications
+├── user/                # User profile management
+├── books/               # Book compilation and minting
+├── habits/              # Habit tracking (planned)
+├── journal/             # Journal entries (planned)
+├── tip/                 # Tipping transactions
+├── paywall/             # Paywall management
+├── sync/                # Vault sync verification
+├── waitlist/            # Waitlist signups
+├── audio/               # Audio file uploads
+├── cron/                # Scheduled tasks
+└── admin/               # Admin-only routes
+```
+
+---
+
+## Route Pattern
+
+Each route folder contains a `route.ts` file that exports HTTP method handlers:
+
+```tsx
+// app/api/stories/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { validateAuthOrReject, isAuthError } from "@/lib/auth";
+
+export async function GET(req: NextRequest) {
+  const authResult = await validateAuthOrReject(req);
+  if (isAuthError(authResult)) return authResult;
+  const userId = authResult;
+
+  // ... fetch stories for userId
+
+  return NextResponse.json({ stories: data });
+}
+
+export async function POST(req: NextRequest) {
+  const authResult = await validateAuthOrReject(req);
+  if (isAuthError(authResult)) return authResult;
+  const userId = authResult;
+
+  const body = await req.json();
+
+  // ... create story
+
+  return NextResponse.json({ story: inserted });
+}
+```
+
+---
+
+## Authentication
+
+All API routes (except `/api/auth/*` and `/api/waitlist`) require Bearer token authentication.
+
+### Auth Pattern
+
+<Accordion title="Standard Auth Check">
+  ```tsx
+  import { validateAuthOrReject, isAuthError } from "@/lib/auth";
+
+  export async function POST(req: NextRequest) {
+    // Step 1: Validate token
+    const authResult = await validateAuthOrReject(req);
+    if (isAuthError(authResult)) return authResult; // Returns 401 if invalid
+
+    // Step 2: Extract user ID
+    const userId = authResult; // JWT user ID (Google or wallet)
+
+    // Step 3: Use userId for operations
+    const body = await req.json();
+    // ...
+  }
+  ```
+</Accordion>
+
+<Accordion title="validateAuthOrReject Function">
+  Located in `lib/auth.ts`, this function:
+
+  1. Extracts Bearer token from `Authorization` header
+  2. Tries Supabase JWT verification (Google/OAuth users)
+  3. Falls back to custom wallet JWT verification (wallet users)
+  4. Returns user ID if valid, or `NextResponse` 401 if invalid
+
+  ```tsx
+  // lib/auth.ts
+  export async function validateAuthOrReject(
+    request: NextRequest
+  ): Promise<string | NextResponse> {
+    const userId = await validateAuth(request);
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return userId;
+  }
+  ```
+</Accordion>
+
+### Ownership Verification
+
+For routes that modify resources, verify the user owns the resource:
+
+```tsx
+import { validateAuthOrReject, isAuthError, resolveUserId } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  const authResult = await validateAuthOrReject(req);
+  if (isAuthError(authResult)) return authResult;
+
+  const body = await req.json();
+  const { author_id } = body;
+
+  // Resolve JWT user ID → users table ID (wallet users may differ)
+  const resolvedUserId = await resolveUserId(authResult);
+
+  // Verify ownership
+  if (resolvedUserId !== author_id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // ... proceed with operation
+}
+```
+
+---
+
+## AI Routes
+
+### POST /api/ai/transcribe
+
+**File:** `app/api/ai/transcribe/route.ts`
+
+Transcribes audio to text using ElevenLabs Scribe.
+
+<Accordion title="Request">
+  ```tsx
+  const formData = new FormData();
+  formData.append("file", audioBlob);
+
+  const response = await fetch("/api/ai/transcribe", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+  ```
+</Accordion>
+
+<Accordion title="Response">
+  ```json
+  {
+    "text": "Today I realized that..."
+  }
+  ```
+</Accordion>
+
+<Accordion title="Validation">
+  - Max file size: 25MB
+  - Allowed types: audio/webm, audio/wav, audio/mp3, audio/mpeg, audio/ogg, audio/flac
+  - Returns 400 if validation fails
+  - Returns 422 if transcription is empty
+</Accordion>
+
+---
+
+### POST /api/ai/enhance
+
+**File:** `app/api/ai/enhance/route.ts`
+
+Enhances text clarity using Google Gemini 2.5 Flash.
+
+```tsx
+const response = await fetch("/api/ai/enhance", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ text: "my story text..." }),
+});
+```
+
+**Response:**
+```json
+{
+  "enhancedText": "Today, I realized that..."
+}
+```
+
+---
+
+### POST /api/ai/analyze
+
+**File:** `app/api/ai/analyze/route.ts`
+
+Extracts metadata (themes, tone, insights) using Gemini.
+
+```tsx
+const response = await fetch("/api/ai/analyze", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ title: "My Story", content: "..." }),
+});
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "metadata": {
+    "brief_insight": "A moment of personal growth...",
+    "emotional_tone": "reflective",
+    "themes": ["growth", "relationships"],
+    "is_canonical": true
+  },
+  "insight": "This story shows..."
+}
+```
+
+---
+
+## Auth Routes
+
+### GET /api/auth/nonce
+
+**File:** `app/api/auth/nonce/route.ts`
+
+Generates a one-time nonce for wallet signature verification.
+
+```tsx
+const response = await fetch(`/api/auth/nonce?address=${walletAddress}`);
+const { message } = await response.json();
+// message: "Sign this message to verify your identity. Nonce: abc123..."
+```
+
+**Features:**
+- 5-minute expiry
+- One-time use (deleted after verification)
+- Stores in Supabase `nonces` table
+
+---
+
+### POST /api/auth/login
+
+**File:** `app/api/auth/login/route.ts`
+
+Verifies wallet signature and creates session.
+
+<Accordion title="Request">
+  ```tsx
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      address: "0x1234...",
+      message: "Sign this message...",
+      signature: "0xabcd...",
+    }),
+  });
+  ```
+</Accordion>
+
+<Accordion title="Response">
+  ```json
+  {
+    "user": {
+      "id": "uuid",
+      "wallet_address": "0x1234...",
+      "name": "Alice",
+      "username": "alice",
+      "is_onboarded": true
+    },
+    "wallet_token": "jwt_token_here"
+  }
+  ```
+</Accordion>
+
+---
+
+### GET /api/auth/callback
+
+**File:** `app/api/auth/callback/route.ts`
+
+Handles Google OAuth redirect after successful login.
+
+**Flow:**
+1. User clicks "Sign in with Google"
+2. Redirected to Google OAuth
+3. Google redirects back to `/api/auth/callback?code=...`
+4. This route validates the code and redirects to home
+
+---
+
+### POST /api/auth/onboarding
+
+**File:** `app/api/auth/onboarding/route.ts`
+
+Completes user onboarding by setting username and preferences.
+
+```tsx
+const response = await fetch("/api/auth/onboarding", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    userId: "uuid",
+    username: "alice",
+    name: "Alice Smith",
+  }),
+});
+```
+
+---
+
+## Story Routes
+
+### GET /api/stories
+
+**File:** `app/api/stories/route.ts`
+
+Fetches authenticated user's own stories (bypasses RLS using admin client).
+
+```tsx
+const response = await fetch("/api/stories", {
+  headers: { Authorization: `Bearer ${token}` },
+});
+
+const { stories } = await response.json();
+```
+
+---
+
+### POST /api/stories
+
+**File:** `app/api/stories/route.ts`
+
+Creates a new story.
+
+<Accordion title="Request">
+  ```tsx
+  const response = await fetch("/api/stories", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      author_id: "uuid",
+      author_wallet: "0x1234...",
+      title: "My Story",
+      content: "Story content...",
+      has_audio: true,
+      audio_url: "https://...",
+      tags: ["personal", "growth"],
+      mood: "reflective",
+      ipfs_hash: "Qm...",
+      is_public: true,
+      story_date: "2026-03-03T00:00:00Z",
+    }),
+  });
+  ```
+</Accordion>
+
+**Validation:**
+- `author_id` must match authenticated user
+- `author_wallet` must match user's wallet in database
+- Required fields: `author_id`, `author_wallet`, `title`, `content`
+
+---
+
+### GET /api/stories/feed
+
+**File:** `app/api/stories/feed/route.ts`
+
+Fetches public stories for community feed.
+
+```tsx
+const response = await fetch("/api/stories/feed?limit=20&offset=0");
+const { stories, hasMore } = await response.json();
+```
+
+---
+
+### GET /api/stories/[storyId]/metadata
+
+**File:** `app/api/stories/[storyId]/metadata/route.ts`
+
+Fetches AI-generated metadata for a story.
+
+```tsx
+const response = await fetch(`/api/stories/${storyId}/metadata`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+
+const { metadata } = await response.json();
+```
+
+---
+
+## CRE Routes (Chainlink Verification)
+
+### POST /api/cre/trigger
+
+**File:** `app/api/cre/trigger/route.ts`
+
+Triggers Chainlink CRE verification workflow for a story.
+
+```tsx
+const response = await fetch("/api/cre/trigger", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ storyId: "123" }),
+});
+```
+
+**Returns:**
+```json
+{
+  "success": true,
+  "message": "CRE verification workflow triggered"
+}
+```
+
+---
+
+### POST /api/cre/callback
+
+**File:** `app/api/cre/callback/route.ts`
+
+Receives CRE results from Chainlink DON nodes (called by CRE workflow, not by frontend).
+
+**Request body:**
+```json
+{
+  "storyId": "123",
+  "significance_score": 8.5,
+  "emotional_depth": 7.2,
+  "quality_score": 8.0,
+  "word_count": 450,
+  "verified_themes": ["growth", "relationships"],
+  "qualityTier": 4,
+  "meetsQualityThreshold": true,
+  "metricsHash": "0xabc...",
+  "attestationId": "cre-123",
+  "on_chain_tx_hash": "0xdef..."
+}
+```
+
+**Behavior:**
+- Stores full metrics in Supabase (author-only access)
+- Dual-write: on-chain proof + off-chain full data
+
+---
+
+### POST /api/cre/check
+
+**File:** `app/api/cre/check/route.ts`
+
+Checks CRE verification status (with privacy filtering).
+
+```tsx
+const response = await fetch("/api/cre/check", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ storyId: "123" }),
+});
+
+const { verified, isAuthor, metrics, proof } = await response.json();
+```
+
+**Privacy Model:**
+- **Author** - Receives full `metrics` + `proof`
+- **Public** - Receives `proof` only (tier, threshold, hash)
+
+---
+
+## Social Routes
+
+### POST /api/social/like
+
+**File:** `app/api/social/like/route.ts`
+
+Likes or unlikes a story.
+
+```tsx
+const response = await fetch("/api/social/like", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ storyId: 123 }),
+});
+```
+
+---
+
+### POST /api/social/follow
+
+**File:** `app/api/social/follow/route.ts`
+
+Follows or unfollows a user.
+
+```tsx
+const response = await fetch("/api/social/follow", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ targetUserId: "uuid" }),
+});
+```
+
+---
+
+## Other Routes
+
+<AccordionGroup>
+  <Accordion title="POST /api/ipfs/upload">
+    Uploads files or metadata to IPFS via Pinata.
+
+    ```tsx
+    const formData = new FormData();
+    formData.append("file", audioBlob);
+
+    const response = await fetch("/api/ipfs/upload", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+
+    const { hash, url } = await response.json();
+    ```
+  </Accordion>
+
+  <Accordion title="POST /api/email/send">
+    Sends transactional emails via Resend.
+
+    ```tsx
+    const response = await fetch("/api/email/send", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "welcome",
+        email: "user@example.com",
+        username: "alice",
+      }),
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="GET /api/notifications">
+    Fetches user notifications.
+
+    ```tsx
+    const response = await fetch("/api/notifications?limit=20&offset=0", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const { data, pagination } = await response.json();
+    ```
+  </Accordion>
+
+  <Accordion title="POST /api/waitlist">
+    Adds email to waitlist (no auth required).
+
+    ```tsx
+    const response = await fetch("/api/waitlist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "user@example.com" }),
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Error Handling
+
+<CardGroup cols={2}>
+  <Card title="Standard Errors" icon="exclamation-triangle">
+    - `400` - Bad request (validation failure)
+    - `401` - Unauthorized (missing/invalid token)
+    - `403` - Forbidden (not owner of resource)
+    - `404` - Not found
+    - `409` - Conflict (duplicate entry)
+    - `422` - Unprocessable entity (semantic error)
+    - `429` - Too many requests (rate limit)
+    - `500` - Internal server error
+  </Card>
+
+  <Card title="Error Response Format" icon="code">
+    ```json
+    {
+      "error": "Human-readable message",
+      "code": "ERROR_CODE" // optional
+    }
+    ```
+
+    **Never expose internal error details** (stack traces, database errors, etc.) to the client.
+  </Card>
+</CardGroup>
+
+---
+
+## Related
+
+<CardGroup cols={3}>
+  <Card title="Middleware" icon="filter" href="/architecture/middleware">
+    Rate limiting and CORS configuration
+  </Card>
+  <Card title="Services" icon="server" href="/architecture/services">
+    Backend service clients used by routes
+  </Card>
+  <Card title="Hooks" icon="link" href="/architecture/hooks">
+    Frontend hooks that call these routes
+  </Card>
+</CardGroup>

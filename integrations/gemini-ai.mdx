@@ -1,0 +1,525 @@
+---
+title: "Google Gemini AI Integration"
+description: "AI-powered text enhancement, story analysis, and weekly reflections using Gemini 2.5 Flash"
+---
+
+## Overview
+
+The Google Gemini AI integration powers three key features in eStory:
+
+1. **Text Enhancement**: Grammar correction and vocabulary improvement
+2. **Story Analysis**: Cognitive metadata extraction (themes, emotions, significance)
+3. **Weekly Reflections**: Pattern recognition and insights (planned)
+
+All AI operations use the **Gemini 2.5 Flash** model for optimal speed and cost efficiency.
+
+## Text Enhancement
+
+### API Endpoint
+
+```
+POST /api/ai/enhance
+```
+
+**Authentication**: Bearer token required  
+**Rate Limit**: 10 requests/minute
+
+### Request Format
+
+```typescript
+const response = await fetch('/api/ai/enhance', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ text: 'Raw journal entry...' }),
+});
+
+const { text: enhancedText } = await response.json();
+```
+
+### Enhancement Prompt
+
+The enhancement prompt is carefully engineered to preserve personal voice:
+
+```typescript
+const prompt = `
+You are an expert storytelling editor. Please enhance the following journal entry.
+- Fix grammar and spelling errors.
+- Improve the flow and vocabulary while keeping the original personal tone.
+- Do not change the underlying meaning or add fictional events.
+- Return ONLY the enhanced text. Do not include quotes around the result.
+
+Original Text:
+"${text}"
+`;
+```
+
+<Info>
+The AI is instructed to **preserve the personal tone** and **never add fictional events**, ensuring the enhanced story remains authentic.
+</Info>
+
+### Input Validation
+
+```typescript
+const MAX_TEXT_LENGTH = 50000; // ~50,000 characters
+
+if (typeof text !== "string" || text.length > MAX_TEXT_LENGTH) {
+  return NextResponse.json(
+    { error: `Text exceeds maximum length of ${MAX_TEXT_LENGTH} characters` },
+    { status: 400 }
+  );
+}
+```
+
+### Implementation
+
+```typescript
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY!);
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+const result = await model.generateContent(prompt);
+const response = await result.response;
+const enhancedText = response.text();
+```
+
+## Story Analysis
+
+### API Endpoint
+
+```
+POST /api/ai/analyze
+```
+
+**Authentication**: Bearer token required  
+**Rate Limit**: 30 requests/minute  
+**Processing Time**: ~2-5 seconds
+
+### Request Format
+
+```typescript
+const response = await fetch('/api/ai/analyze', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    storyId: 'uuid',
+    storyText: 'Full story content...',
+  }),
+});
+
+const { success, metadata, insight } = await response.json();
+```
+
+### Response Format
+
+**Success (200)**
+```json
+{
+  "success": true,
+  "metadata": {
+    "story_id": "uuid",
+    "themes": ["growth", "family", "resilience"],
+    "emotional_tone": "reflective",
+    "life_domain": "relationships",
+    "intensity_score": 0.75,
+    "significance_score": 0.85,
+    "people_mentioned": ["Sarah", "Dad"],
+    "places_mentioned": ["Paris", "childhood home"],
+    "time_references": ["last summer", "when I was 12"],
+    "brief_insight": "A story about reconnecting with family roots and finding strength in shared history."
+  },
+  "insight": "A story about reconnecting with family roots and finding strength in shared history."
+}
+```
+
+**Error (400/403/409/429/500)**
+```json
+{
+  "error": "Human-readable error message",
+  "code": "OPTIONAL_ERROR_CODE"
+}
+```
+
+### Metadata Schema
+
+The analysis extracts structured metadata into the `story_metadata` table:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `themes` | `string[]` | 1-5 key themes (e.g., "growth", "loss", "discovery") |
+| `emotional_tone` | `enum` | One of: reflective, joyful, anxious, hopeful, melancholic, grateful, frustrated, peaceful, excited, uncertain, neutral |
+| `life_domain` | `enum` | One of: work, relationships, health, identity, growth, creativity, spirituality, family, adventure, learning, general |
+| `intensity_score` | `float` | 0.0-1.0: Emotional charge of the story |
+| `significance_score` | `float` | 0.0-1.0: Importance to the person's life story |
+| `people_mentioned` | `string[]` | Proper names of people |
+| `places_mentioned` | `string[]` | Specific locations |
+| `time_references` | `string[]` | Time markers (e.g., "last summer", "yesterday") |
+| `brief_insight` | `string` | One-sentence compassionate observation |
+
+<Note>
+All metadata fields are validated and sanitized before database insertion. Invalid values default to safe fallbacks (e.g., "neutral" for emotional_tone).
+</Note>
+
+### Analysis Prompt Engineering
+
+The analysis prompt is designed to extract actionable cognitive metadata:
+
+```typescript
+const ANALYSIS_PROMPT = `You are a cognitive analysis engine for a personal journaling app. Analyze the following story and extract structured metadata.
+
+Story:
+"""
+{STORY_TEXT}
+"""
+
+Extract and return ONLY valid JSON (no markdown, no code blocks, no explanation). Use this exact structure:
+
+{
+  "themes": ["theme1", "theme2", "theme3"],
+  "emotional_tone": "string",
+  "life_domain": "string",
+  "intensity_score": 0.0,
+  "significance_score": 0.0,
+  "people_mentioned": ["name1", "name2"],
+  "places_mentioned": ["place1", "place2"],
+  "time_references": ["reference1", "reference2"],
+  "brief_insight": "A single sentence insight about this story's meaning or significance."
+}
+
+Guidelines:
+- themes: 1-5 key themes from the story
+- emotional_tone: MUST be one of: reflective, joyful, anxious, hopeful, melancholic, grateful, frustrated, peaceful, excited, uncertain, neutral
+- life_domain: MUST be one of: work, relationships, health, identity, growth, creativity, spirituality, family, adventure, learning, general
+- intensity_score: 0.0-1.0, how emotionally charged is this story?
+- significance_score: 0.0-1.0, how important is this event to the person's life story?
+- brief_insight: A compassionate, insightful one-sentence observation
+
+Return ONLY the JSON object, nothing else.`;
+```
+
+### Retry Logic with Exponential Backoff
+
+The analysis endpoint implements robust retry logic:
+
+```typescript
+async function callGeminiWithRetry(
+  model: ReturnType<GoogleGenerativeAI["getGenerativeModel"]>,
+  prompt: string,
+  storyId: string
+): Promise<{ text: string; attempt: number }> {
+  const MAX_RETRIES = 3;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      return { text: result.response.text(), attempt };
+    } catch (error) {
+      lastError = error as Error;
+      
+      if (attempt < MAX_RETRIES) {
+        const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError || new Error("Gemini API failed after all retries");
+}
+```
+
+### Rate Limiting & Concurrency Control
+
+**Per-Story Rate Limit**: 30 requests/minute (in-memory map)  
+**Concurrency Control**: One analysis per story at a time
+
+```typescript
+const rateLimitMap = new Map<string, RateLimitEntry>();
+const inProgressAnalysis = new Set<string>();
+
+if (isAnalysisInProgress(storyId)) {
+  return NextResponse.json(
+    { error: "Analysis already in progress for this story" },
+    { status: 409 }
+  );
+}
+
+startAnalysis(storyId); // Add to Set
+try {
+  // ... perform analysis
+} finally {
+  endAnalysis(storyId); // Remove from Set
+}
+```
+
+### Content Processing
+
+**Maximum Length**: 10,000 characters  
+**Minimum Length**: 50 characters
+
+```typescript
+function truncateContent(text: string, storyId: string) {
+  if (text.length <= MAX_CONTENT_LENGTH) {
+    return { text, wasTruncated: false };
+  }
+
+  // Truncate at word boundary
+  let truncated = text.slice(0, MAX_CONTENT_LENGTH);
+  const lastSpace = truncated.lastIndexOf(" ");
+  if (lastSpace > MAX_CONTENT_LENGTH - 100) {
+    truncated = truncated.slice(0, lastSpace);
+  }
+
+  return { text: truncated + " [truncated]", wasTruncated: true };
+}
+```
+
+### JSON Parsing & Validation
+
+The response parser handles common Gemini formatting issues:
+
+```typescript
+function cleanGeminiResponse(text: string): string {
+  return text
+    .replace(/```json\s*/gi, '')  // Remove markdown code blocks
+    .replace(/```\s*/gi, '')
+    .trim();
+}
+
+function parseAndValidateMetadata(analysisText: string, storyId: string) {
+  let textToParse = cleanGeminiResponse(analysisText);
+
+  // Extract JSON object if wrapped in other text
+  const jsonMatch = textToParse.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    textToParse = jsonMatch[0];
+  }
+
+  try {
+    return JSON.parse(textToParse);
+  } catch {
+    // Try fixing trailing commas
+    const fixedText = textToParse
+      .replace(/,\s*}/g, '}')
+      .replace(/,\s*]/g, ']');
+    return JSON.parse(fixedText);
+  }
+}
+```
+
+### Data Sanitization
+
+All metadata is sanitized before database insertion:
+
+```typescript
+function sanitizeMetadata(metadata: Record<string, unknown>) {
+  return {
+    themes: Array.isArray(metadata.themes)
+      ? metadata.themes.slice(0, 5).map(t => String(t).toLowerCase())
+      : [],
+    emotional_tone: VALID_EMOTIONAL_TONES.includes(metadata.emotional_tone)
+      ? metadata.emotional_tone
+      : 'neutral',
+    life_domain: VALID_LIFE_DOMAINS.includes(metadata.life_domain)
+      ? metadata.life_domain
+      : 'general',
+    intensity_score: Math.max(0, Math.min(1, metadata.intensity_score || 0.5)),
+    significance_score: Math.max(0, Math.min(1, metadata.significance_score || 0.5)),
+    people_mentioned: Array.isArray(metadata.people_mentioned)
+      ? metadata.people_mentioned.map(p => String(p))
+      : [],
+    places_mentioned: Array.isArray(metadata.places_mentioned)
+      ? metadata.places_mentioned.map(p => String(p))
+      : [],
+    time_references: Array.isArray(metadata.time_references)
+      ? metadata.time_references.map(t => String(t))
+      : [],
+    brief_insight: typeof metadata.brief_insight === 'string'
+      ? metadata.brief_insight.slice(0, 500)
+      : null,
+  };
+}
+```
+
+## Security
+
+Both AI endpoints follow eStory's security model:
+
+```
+Layer 4: Ownership verification (analyze only your stories)
+Layer 3: Input validation (text length, content type)
+Layer 2: Bearer token auth (validateAuthOrReject)
+Layer 1: Rate limiting (10/min enhance, 30/min analyze)
+Layer 0: Security headers (CSP, X-Frame-Options)
+```
+
+### Authentication
+
+```typescript
+import { validateAuthOrReject, isAuthError } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  const authResult = await validateAuthOrReject(req);
+  if (isAuthError(authResult)) return authResult;
+  const authenticatedUserId = authResult;
+  // ...
+}
+```
+
+### Ownership Verification (Analyze)
+
+```typescript
+const ownershipSupabase = createSupabaseAdminClient();
+const { data: storyOwner } = await ownershipSupabase
+  .from("stories")
+  .select("author_id")
+  .eq("id", storyId)
+  .single();
+
+if (storyOwner && storyOwner.author_id !== authenticatedUserId) {
+  return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+}
+```
+
+## Performance Monitoring
+
+The analysis endpoint includes built-in performance tracking:
+
+```typescript
+import { performanceMonitor, OperationTimer } from "@/app/utils/performanceMonitor";
+import { analysisLogger } from "@/app/utils/analysisLogger";
+
+const fullAnalysisTimer = new OperationTimer("full_analysis");
+const geminiTimer = new OperationTimer("gemini_call");
+const dbTimer = new OperationTimer("db_upsert");
+
+// ... operations ...
+
+const duration = fullAnalysisTimer.stop(true);
+analysisLogger.timed(storyId, "analysis_completed", duration, {
+  themes: metadata.themes.length,
+  retryAttempts: attempt,
+  wasTruncated,
+});
+```
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# .env.local
+GOOGLE_GENERATIVE_AI_API_KEY=AIza...
+```
+
+Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+
+### SDK Version
+
+```json
+// package.json
+{
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0"
+  }
+}
+```
+
+## Weekly Reflections (Planned)
+
+The Gemini integration will power Phase 2's Weekly Reflections feature:
+
+```typescript
+// POST /api/ai/weekly-reflection (planned)
+const response = await fetch('/api/ai/weekly-reflection', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` },
+  body: JSON.stringify({
+    startDate: '2026-03-01',
+    endDate: '2026-03-07',
+  }),
+});
+
+const { themes, patterns, insight } = await response.json();
+```
+
+See `docs/ROADMAP.md` for details.
+
+## Cost Optimization
+
+### Token Usage
+
+- **Enhancement**: ~500-2000 tokens per request
+- **Analysis**: ~1000-3000 tokens per request
+- **Model**: Gemini 2.5 Flash (cheapest, fastest)
+
+### Optimization Strategies
+
+1. **Content Truncation**: Limit analysis to 10,000 characters
+2. **Rate Limiting**: Prevent abuse via middleware + in-memory tracking
+3. **Caching**: Store analysis results in `story_metadata` table
+4. **Retry Backoff**: Avoid rapid successive API calls
+
+## Testing
+
+### Manual Testing
+
+```bash
+# Test enhancement
+curl -X POST http://localhost:3000/api/ai/enhance \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"i went to the store yesterday it was fun"}'
+
+# Test analysis
+curl -X POST http://localhost:3000/api/ai/analyze \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"storyId":"uuid","storyText":"Today I learned something important..."}'
+```
+
+### Unit Tests
+
+Mock the Google Generative AI client:
+
+```typescript
+vi.mock('@google/generative-ai', () => ({
+  GoogleGenerativeAI: vi.fn(() => ({
+    getGenerativeModel: vi.fn(() => ({
+      generateContent: vi.fn().mockResolvedValue({
+        response: { text: () => 'Mocked enhanced text' },
+      }),
+    })),
+  })),
+}));
+```
+
+## Troubleshooting
+
+### Rate Limit Errors (429)
+
+**Solution**: Wait for the retry window (shown in `Retry-After` header) or upgrade API quota.
+
+### Invalid JSON Responses
+
+The parser includes fallback logic for common issues (markdown code blocks, trailing commas). If parsing still fails, the error is logged with a preview of the response.
+
+### Empty Analysis Results
+
+Check that:
+- Story text meets minimum length (50 characters)
+- API key is valid
+- `story_metadata` table exists (run migration if missing)
+
+## References
+
+- [Google Gemini API Documentation](https://ai.google.dev/docs)
+- [Enhancement API Endpoint](/api/ai/enhance)
+- [Analysis API Endpoint](/api/ai/analyze)
+- [AI Story Analysis Feature](/features/ai-analysis)

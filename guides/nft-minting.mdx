@@ -1,0 +1,553 @@
+---
+title: NFT Minting
+description: Compile your stories into digital book collections and mint them as ERC721 NFTs on Base with ERC2981 royalties
+---
+
+Mint your story collections as NFTs on Base (Ethereum L2) using the StoryNFT smart contract. Each book is an ERC721 token with metadata stored on IPFS and 5% creator royalties (ERC2981).
+
+## What Are Story NFTs?
+
+Story NFTs are digital book collections minted as ERC721 tokens:
+
+<CardGroup cols={2}>
+  <Card title="ERC721 Standard" icon="image">
+    Each book is a unique non-fungible token owned by the minter. Can be transferred, sold, or held.
+  </Card>
+  <Card title="IPFS Metadata" icon="database">
+    Book metadata (title, description, stories) is stored on IPFS for permanent decentralized access.
+  </Card>
+  <Card title="ERC2981 Royalties" icon="coins">
+    5% royalty on secondary sales, paid to the original author. Standard OpenSea/marketplace support.
+  </Card>
+  <Card title="Base Network" icon="link">
+    Minted on Base Sepolia testnet (84532) for low gas fees and Ethereum security.
+  </Card>
+</CardGroup>
+
+## Smart Contract Overview
+
+The `StoryNFT` contract is deployed on **Base Sepolia** at `0x6D37ebc5...` (check `lib/contracts.ts` for latest address).
+
+### Contract Features
+
+```solidity
+// contracts/StoryNFT.sol
+contract StoryNFT is ERC721URIStorage, AccessControl, ERC2981 {
+    uint256 public mintFee = 0.001 ether; // Small fee to prevent spam
+    uint256 private _nextTokenId;
+
+    event NFTMinted(
+        uint256 indexed tokenId,
+        address indexed recipient,
+        string uri,
+        string collectionType
+    );
+
+    // 2. BOOK/COLLECTION MINT (Public, requires mint fee)
+    function mintBook(string memory uri) external payable {
+        require(msg.value >= mintFee, "Insufficient mint fee");
+        uint256 tokenId = ++_nextTokenId;
+        _safeMint(msg.sender, tokenId);
+        _setTokenURI(tokenId, uri);
+        emit NFTMinted(tokenId, msg.sender, uri, "BOOK");
+    }
+}
+```
+
+### Key Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `mintFee` | 0.001 ETH | Required payment to mint a book (prevents spam) |
+| `tokenURI` | `ipfs://{hash}` | IPFS URI pointing to book metadata JSON |
+| `royaltyPercentage` | 5% (500 basis points) | Creator royalty on secondary sales |
+| `collectionType` | "BOOK" | Emitted in NFTMinted event |
+
+<Note>
+  There's also a `mintWeeklyWinner` function (admin-only) for minting prize NFTs with no fee. This is used for weekly community contests.
+</Note>
+
+## Compiling Stories into Books
+
+Before minting, you must compile stories into a book collection in the Library.
+
+<Steps>
+  <Step title="Navigate to Library">
+    Go to `/library` and ensure you have at least 2 stories recorded.
+  </Step>
+
+  <Step title="Start Compilation Mode">
+    Click the "Compile Book" button in the Quick Actions card. The interface switches to selection mode:
+
+    ```tsx
+    // LibraryPageClient.tsx:313-318
+    const handleStartCompile = () => {
+      setIsCompiling(true);
+      setActiveTab("all");
+      setSelectedStoryIds(new Set());
+      toast("Select stories to add to your book", { icon: "📚" });
+    };
+    ```
+
+    Story cards now show checkboxes in the top-right corner.
+  </Step>
+
+  <Step title="Select Stories">
+    Click story cards to select them. Selected cards show:
+    - Blue ring border (`ring-2 ring-[hsl(var(--memory-600))]`)
+    - Checkmark icon
+    - Blue background tint
+
+    The "Create Book" button updates with the count: "Create Book (3)"
+
+    <Note>
+      You must select at least 2 stories to create a book. Books are not selectable during compilation mode.
+    </Note>
+  </Step>
+
+  <Step title="Open Book Dialog">
+    Click "Create Book (X)" to open the compilation dialog:
+
+    ```tsx
+    // LibraryPageClient.tsx:722-768
+    <Dialog open={isBookDialogOpen} onOpenChange={setIsBookDialogOpen}>
+      <DialogHeader>
+        <DialogTitle>Compile Digital Book</DialogTitle>
+        <DialogDescription>
+          Create a collection from your selected {selectedStoryIds.size} stories.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="grid gap-4 py-4">
+        <div className="grid gap-2">
+          <Label htmlFor="title">Book Title</Label>
+          <Input id="title" placeholder="e.g., Summer Memories 2024" />
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="desc">Description</Label>
+          <Textarea id="desc" placeholder="What is this collection about?" />
+        </div>
+      </div>
+    </Dialog>
+    ```
+
+    Fill in:
+    - **Book Title** (required) — e.g., "Summer Memories 2024"
+    - **Description** (optional) — Brief summary of the collection
+  </Step>
+</Steps>
+
+## Minting Process
+
+After filling in book details, click "Create Collection" to mint:
+
+<Steps>
+  <Step title="Metadata Preparation">
+    The app constructs an OpenSea-compatible metadata object:
+
+    ```tsx
+    // LibraryPageClient.tsx:342-356
+    const metadata = {
+      name: newBookTitle,
+      description: newBookDesc,
+      external_url: "https://estory.vercel.app",
+      attributes: [
+        { trait_type: "Author", value: authInfo.name },
+        { trait_type: "Stories", value: selectedStories.length },
+      ],
+      stories: selectedStories.map((s) => ({
+        title: s.title,
+        content: s.content,
+        audio: s.audio_url,
+        date: s.created_at,
+      })),
+    };
+    ```
+
+    <Note>
+      The `stories` field is custom (not OpenSea standard) and stores the full story content. This makes the NFT metadata self-contained.
+    </Note>
+  </Step>
+
+  <Step title="IPFS Upload">
+    Metadata is uploaded to IPFS via Pinata:
+
+    ```tsx
+    // LibraryPageClient.tsx:359
+    toast.loading("Uploading Metadata...", { id: "book-toast" });
+    const ipfsResult = await ipfsService.uploadMetadata(metadata, await getAccessToken());
+    if (!ipfsResult?.hash) throw new Error("IPFS upload failed");
+    const tokenURI = `ipfs://${ipfsResult.hash}`;
+    ```
+
+    The IPFS hash is returned (e.g., `QmXy1234...`) and formatted as `ipfs://QmXy1234...`.
+
+    <Note>
+      IPFS pinning is permanent. The metadata cannot be deleted once uploaded.
+    </Note>
+  </Step>
+
+  <Step title="Smart Contract Mint">
+    The `mintBook` function is called via Wagmi:
+
+    ```tsx
+    // LibraryPageClient.tsx:364
+    toast.loading("Minting NFT...", { id: "book-toast" });
+    await mintBook(tokenURI);
+    ```
+
+    This triggers the `useStoryNFT` hook:
+
+    ```tsx
+    // app/hooks/useStoryNFT.ts:13-26
+    const mintBook = async (ipfsUri: string) => {
+      try {
+        writeContract({
+          address: STORY_NFT_ADDRESS,
+          abi: STORY_NFT_ABI,
+          functionName: "mintBook",
+          args: [ipfsUri],
+        });
+        toast.loading("Minting your book...", { id: "nft-toast" });
+      } catch (err) {
+        console.error(err);
+        toast.error("Failed to mint book");
+      }
+    };
+    ```
+
+    **Wallet Interaction:**
+    - RainbowKit prompts you to confirm the transaction
+    - Must have sufficient ETH for gas + 0.001 ETH mint fee
+    - Transaction hash is returned and monitored
+
+    <Warning>
+      If you reject the transaction, the IPFS metadata is already uploaded but no NFT is minted. You can retry minting with the same `tokenURI` later.
+    </Warning>
+  </Step>
+
+  <Step title="Transaction Confirmation">
+    The app waits for transaction confirmation:
+
+    ```tsx
+    // app/hooks/useStoryNFT.ts:29-37
+    const { isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash });
+
+    useEffect(() => {
+      if (isConfirmed) {
+        toast.success("Book minted successfully!", { id: "nft-toast" });
+      }
+    }, [isConfirmed]);
+    ```
+
+    This monitors the transaction on-chain and updates the UI when confirmed.
+  </Step>
+
+  <Step title="Database Save">
+    After minting, the book is saved to Supabase:
+
+    ```tsx
+    // LibraryPageClient.tsx:366-377
+    const res = await fetch("/api/books", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        author_id: authInfo.id,
+        author_wallet: authInfo.wallet_address,
+        title: newBookTitle,
+        description: newBookDesc,
+        story_ids: Array.from(selectedStoryIds),
+        ipfs_hash: ipfsResult.hash,
+      }),
+    });
+    ```
+
+    This creates a `books` table entry linking the NFT to the author and included stories.
+  </Step>
+
+  <Step title="View Book">
+    After successful minting, the book appears in the **Books** tab of the Library.
+
+    ```tsx
+    toast.success("Book Created & Minted!", { id: "book-toast" });
+    setIsBookDialogOpen(false);
+    setIsCompiling(false);
+    setSelectedStoryIds(new Set());
+    fetchData(); // Refresh library
+    ```
+  </Step>
+</Steps>
+
+## Mint Fees
+
+The mint fee is **0.001 ETH** (hardcoded in the contract):
+
+```solidity
+// contracts/StoryNFT.sol:13
+uint256 public mintFee = 0.001 ether;
+
+// contracts/StoryNFT.sol:34-35
+function mintBook(string memory uri) external payable {
+    require(msg.value >= mintFee, "Insufficient mint fee");
+    // ...
+}
+```
+
+**Why is there a mint fee?**
+- Prevents spam minting (small economic barrier)
+- Covers contract deployment/maintenance costs
+- Can be withdrawn by contract admin
+
+**Fee Updates:**
+The contract admin can update the mint fee:
+
+```solidity
+// contracts/StoryNFT.sol:43-45
+function setMintFee(uint256 _fee) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    mintFee = _fee;
+}
+```
+
+<Note>
+  Current mint fee is 0.001 ETH (~$2-3 USD on mainnet). Check `STORY_NFT_ADDRESS` on Basescan for the latest deployed fee.
+</Note>
+
+## Royalties (ERC2981)
+
+The contract implements **ERC2981** for on-chain royalty info:
+
+```solidity
+// contracts/StoryNFT.sol:7
+import "@openzeppelin/contracts/token/common/ERC2981.sol";
+
+// contracts/StoryNFT.sol:22
+_setDefaultRoyalty(defaultAdmin, 500); // 5% royalty (500 basis points)
+
+// contracts/StoryNFT.sol:56-58
+function setDefaultRoyalty(address receiver, uint96 feeNumerator) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    _setDefaultRoyalty(receiver, feeNumerator);
+}
+```
+
+**How Royalties Work:**
+
+1. **Primary Sale (Mint):**
+   - Minter pays 0.001 ETH mint fee to contract
+   - No royalty on initial mint (100% to minter)
+
+2. **Secondary Sale (OpenSea, etc.):**
+   - Marketplace queries `royaltyInfo(tokenId, salePrice)` via ERC2981
+   - Contract returns `(receiver, royaltyAmount)` where `royaltyAmount = salePrice * 5%`
+   - Marketplace automatically sends 5% to the original author
+
+<CardGroup cols={2}>
+  <Card title="OpenSea Support" icon="shopping-bag">
+    OpenSea respects ERC2981 royalties automatically. No manual configuration needed.
+  </Card>
+  <Card title="Permanent Royalty" icon="lock">
+    Royalty is set at mint time and cannot be changed per-token (default is 5% to minter).
+  </Card>
+</CardGroup>
+
+**Example:**
+- You mint a book for 0.001 ETH
+- You sell it on OpenSea for 1 ETH
+- Buyer pays 1 ETH (you receive 0.95 ETH, you receive 0.05 ETH royalty)
+- Future sales also pay you 5%
+
+## Viewing on OpenSea
+
+After minting, your NFT is viewable on OpenSea:
+
+1. Go to [OpenSea Testnet](https://testnets.opensea.io/) (for Base Sepolia)
+2. Search for the contract address: `0x6D37ebc5...` (or your wallet address)
+3. Find your minted book in the collection
+4. View metadata (title, description, attributes)
+5. Play audio (if stories have audio URLs)
+
+**Metadata Refresh:**
+If metadata doesn't load immediately:
+- Click "Refresh Metadata" on OpenSea
+- Wait 1-2 minutes for IPFS gateway caching
+- OpenSea uses `https://ipfs.io/ipfs/{hash}` as the default gateway
+
+<Note>
+  For **mainnet** deployment, mint on Base Mainnet (chain ID: 8453) and view on [OpenSea Mainnet](https://opensea.io/).
+</Note>
+
+## Contract Deployment
+
+The StoryNFT contract is deployed using Hardhat:
+
+```bash
+# Compile contracts
+npx hardhat compile
+
+# Deploy to Base Sepolia
+npx hardhat run scripts/deploy.ts --network baseSepolia
+
+# Verify on Basescan
+npx hardhat run scripts/verify-deployment.ts --network baseSepolia
+```
+
+**Deployment Script:**
+
+```typescript
+// scripts/deploy.ts
+import { ethers } from "hardhat";
+
+async function main() {
+  const [deployer] = await ethers.getSigners();
+  console.log("Deploying contracts with:", deployer.address);
+
+  const StoryNFT = await ethers.getContractFactory("StoryNFT");
+  const storyNFT = await StoryNFT.deploy(deployer.address);
+  await storyNFT.deployed();
+
+  console.log("StoryNFT deployed to:", storyNFT.address);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+```
+
+**Update Contract Address:**
+
+After deploying, update `lib/contracts.ts`:
+
+```typescript
+// lib/contracts.ts
+export const STORY_NFT_ADDRESS = "0x6D37ebc5..." as `0x${string}`;
+export const STORY_NFT_ABI = [ /* ABI from artifacts */ ];
+```
+
+Also update `.env.local`:
+
+```bash
+NEXT_PUBLIC_STORY_NFT_ADDRESS=0x6D37ebc5...
+```
+
+## Error Handling
+
+### Common Errors
+
+<CardGroup cols={2}>
+  <Card title="Insufficient Mint Fee" icon="alert-circle">
+    **Error:** `Insufficient mint fee`
+
+    **Cause:** Transaction sent with less than 0.001 ETH value.
+
+    **Fix:** Ensure `msg.value >= mintFee` in the transaction. Check wallet balance.
+  </Card>
+
+  <Card title="User Rejected Transaction" icon="x-circle">
+    **Error:** `User rejected the request`
+
+    **Cause:** Wallet transaction was rejected.
+
+    **Fix:** Retry minting. IPFS metadata is already uploaded, so you can reuse the same `tokenURI`.
+  </Card>
+
+  <Card title="IPFS Upload Failed" icon="cloud-off">
+    **Error:** `IPFS upload failed`
+
+    **Cause:** Pinata API error or network issue.
+
+    **Fix:** Check Pinata API key in `.env.local`. Retry upload. Check browser console for specific error.
+  </Card>
+
+  <Card title="Execution Reverted" icon="zap">
+    **Error:** `execution reverted`
+
+    **Cause:** Contract function failed (e.g., insufficient fee, wrong ABI).
+
+    **Fix:** Check transaction on Basescan for revert reason. Verify contract address and ABI match.
+  </Card>
+</CardGroup>
+
+### Debug Checklist
+
+1. **Wallet Connected:** Verify wallet is connected and on correct network (Base Sepolia)
+2. **Sufficient Balance:** Check ETH balance >= gas + 0.001 ETH
+3. **Contract Address:** Verify `STORY_NFT_ADDRESS` in `lib/contracts.ts` matches deployed contract
+4. **IPFS Gateway:** Test `https://ipfs.io/ipfs/{hash}` in browser
+5. **Transaction Hash:** Check on [Basescan Testnet](https://sepolia.basescan.org/) for details
+
+## Advanced: Admin Functions
+
+Contract admins can perform additional operations:
+
+### Mint Weekly Winner (Admin Only)
+
+```solidity
+// contracts/StoryNFT.sol:26-31
+function mintWeeklyWinner(address winner, string memory uri) external onlyRole(MINTER_ROLE) {
+    uint256 tokenId = ++_nextTokenId;
+    _safeMint(winner, tokenId);
+    _setTokenURI(tokenId, uri);
+    emit NFTMinted(tokenId, winner, uri, "WEEKLY_WINNER");
+}
+```
+
+Used for weekly community contests. No mint fee required.
+
+### Withdraw Accumulated Fees
+
+```solidity
+// contracts/StoryNFT.sol:48-53
+function withdraw() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    uint256 balance = address(this).balance;
+    require(balance > 0, "No balance to withdraw");
+    (bool success, ) = payable(msg.sender).call{value: balance}("");
+    require(success, "Withdrawal failed");
+}
+```
+
+Admins can withdraw all accumulated mint fees from the contract.
+
+### Update Royalty
+
+```solidity
+// contracts/StoryNFT.sol:56-58
+function setDefaultRoyalty(address receiver, uint96 feeNumerator) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    _setDefaultRoyalty(receiver, feeNumerator);
+}
+```
+
+Change the default royalty receiver or percentage (affects future mints only).
+
+<Warning>
+  Admin functions require the `DEFAULT_ADMIN_ROLE` or `MINTER_ROLE`. Use Hardhat scripts with the deployer private key to call these functions.
+</Warning>
+
+## Gas Optimization
+
+The StoryNFT contract is optimized for gas efficiency:
+
+- **Incremental Token IDs:** `++_nextTokenId` avoids array iteration
+- **URI Storage:** `ERC721URIStorage` stores URIs on-chain (higher mint cost, lower read cost)
+- **No Enumeration:** Removed `ERC721Enumerable` to save ~50k gas per mint
+- **Minimal Storage:** Only stores essential data (no full metadata on-chain)
+
+**Estimated Gas Costs (Base Sepolia):**
+- Mint: ~150k gas (~$0.01-0.05 USD depending on gas price)
+- Transfer: ~50k gas
+- Approve: ~45k gas
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Library Management" icon="book-open" href="/guides/library-management">
+    View and manage your minted books
+  </Card>
+  <Card title="Earning Tokens" icon="coins" href="/guides/earning-tokens">
+    Earn $STORY tokens from likes and tips
+  </Card>
+  <Card title="Recording Stories" icon="microphone" href="/guides/recording-stories">
+    Record more stories to compile
+  </Card>
+  <Card title="Vault Setup" icon="shield" href="/guides/vault-setup">
+    Set up local encrypted storage
+  </Card>
+</CardGroup>

@@ -1,0 +1,365 @@
+---
+title: Smart Contracts Overview
+description: Core blockchain contracts powering eStory's tokenomics, social monetization, and verifiable AI analysis
+icon: file-contract
+---
+
+## Overview
+
+eStory's smart contract infrastructure provides the foundation for Web3-native storytelling. All contracts are deployed on **Base Sepolia** (testnet) and designed for future deployment on **Base Mainnet**.
+
+## Deployed Contracts
+
+<CardGroup cols={2}>
+  <Card title="eStoryToken" icon="coins">
+    **Address**: `0xf9eDD76B55F58Bf4E8Ae2A90a1D6d8d44dfA74BC`
+    
+    ERC20 token powering the eStory economy. MAX_SUPPLY: 100M $STORY.
+  </Card>
+  
+  <Card title="StoryProtocol" icon="handshake">
+    **Address**: `0xA51a4cA00cC4C81A5F7cB916D0BFa1a4aD6f4a71`
+    
+    Social monetization layer for tipping creators and unlocking paywalled content.
+  </Card>
+  
+  <Card title="StoryNFT" icon="images">
+    **Address**: `0x6D37ebc5eAEF37ecC888689f295D114187933342`
+    
+    ERC721 contract for minting story collections as NFTs. Mint fee: 0.001 ETH.
+  </Card>
+  
+  <Card title="PrivateVerifiedMetrics" icon="shield-check">
+    **Address**: `0x158e08BCD918070C1703E8b84a6E2524D2AE5e4c`
+    
+    Privacy-preserving CRE metrics receiver. Only stores cryptographic proofs on-chain.
+  </Card>
+</CardGroup>
+
+<Note>
+  Contract addresses are stored in `lib/contracts.ts`. Update this file after deploying to new networks.
+</Note>
+
+### Legacy Contract
+
+**VerifiedMetrics** (`0x052B52A4841080a98876275d5f8E6d094c9E086C`) - Original CRE metrics contract with full data on-chain. Kept for backward compatibility.
+
+## Why Base L2?
+
+eStory deploys on **Base** (Coinbase's Ethereum Layer 2) for several key advantages:
+
+<CardGroup cols={3}>
+  <Card title="Low Fees" icon="dollar-sign">
+    Transactions cost ~$0.01 vs ~$20+ on Ethereum mainnet. Users can mint NFTs and tip creators without prohibitive gas costs.
+  </Card>
+  
+  <Card title="Ethereum Security" icon="shield">
+    Base inherits Ethereum's security model via Optimistic Rollups. All state transitions are verifiable on L1.
+  </Card>
+  
+  <Card title="Fast Finality" icon="bolt">
+    ~2 second block times with instant soft confirmations. Stories appear verified on-chain within seconds.
+  </Card>
+</CardGroup>
+
+### Base Network Details
+
+| Network | Chain ID | RPC Endpoint | Explorer |
+|---------|----------|--------------|----------|
+| **Base Sepolia** (testnet) | 84532 | `https://sepolia.base.org` | [sepolia.basescan.org](https://sepolia.basescan.org) |
+| **Base Mainnet** | 8453 | `https://mainnet.base.org` | [basescan.org](https://basescan.org) |
+
+<Info>
+  Base is EVM-compatible, so any Ethereum tooling (Hardhat, ethers.js, viem, Wagmi) works out of the box.
+</Info>
+
+## Contract Purposes
+
+### 1. eStoryToken (ERC20)
+
+**Purpose**: Platform currency for rewards, governance, and economic incentives.
+
+**Key Features**:
+- **Total Supply**: 100,000,000 $STORY (fixed maximum)
+- **Burnable**: Users can burn tokens to reduce supply
+- **Access Control**: Admin role for minting (capped at MAX_SUPPLY)
+- **ERC20 Standard**: Compatible with all DEXs and wallets
+
+**Use Cases**:
+- Weekly challenge rewards (top stories earn $STORY)
+- Staking for premium features
+- Tipping creators (via StoryProtocol)
+- Governance voting (future)
+
+**Example: Check Balance**
+```typescript
+import { useEStoryToken } from "@/app/hooks/useEStoryToken";
+
+const { balance, symbol } = useEStoryToken();
+// balance: "1250.5" (formatted with decimals)
+// symbol: "ESTORY"
+```
+
+### 2. StoryProtocol (Social Monetization)
+
+**Purpose**: Enable direct creator monetization through tips and paywalls.
+
+**Key Functions**:
+- `tipCreator(address creator, uint256 amount, uint256 storyId)` - Send $STORY tokens as tips
+- `payPaywall(address author, uint256 amount, uint256 contentId)` - Unlock premium content
+
+**Events**:
+- `TipSent(from, to, amount, storyId)` - Emitted when a tip is sent
+- `ContentUnlocked(payer, author, amount, contentId)` - Emitted when paywall is unlocked
+
+**Economic Model**:
+```
+User (wants to tip) → Approves $STORY → StoryProtocol.tipCreator() → Creator receives tokens
+```
+
+<Warning>
+  Users must first approve the StoryProtocol contract to spend their $STORY tokens via `ERC20.approve()`.
+</Warning>
+
+**Example: Tip a Creator**
+```typescript
+import { useStoryProtocol } from "@/app/hooks/useStoryProtocol";
+import { useEStoryToken } from "@/app/hooks/useEStoryToken";
+import { parseEther } from "viem";
+
+const { tipCreator } = useStoryProtocol();
+const { approve } = useEStoryToken();
+
+const handleTip = async (creatorAddress: string, storyId: number) => {
+  const amount = parseEther("10"); // 10 $STORY
+  
+  // 1. Approve StoryProtocol to spend tokens
+  await approve(STORY_PROTOCOL_ADDRESS, amount);
+  
+  // 2. Send tip
+  await tipCreator(creatorAddress, amount, storyId);
+};
+```
+
+### 3. StoryNFT (ERC721)
+
+**Purpose**: Mint story collections as NFTs for provable ownership and permanence.
+
+**Key Features**:
+- **ERC721 Standard**: Full OpenSea/Rarible compatibility
+- **URI Storage**: Each NFT points to IPFS metadata
+- **Mint Fee**: 0.001 ETH to prevent spam
+- **Royalties**: 5% on secondary sales (ERC2981)
+- **Access Control**: Admin can mint "Weekly Winner" NFTs (no fee)
+
+**Minting Flow**:
+```
+User → Upload metadata to IPFS → Get CID → Call mintBook(uri) → NFT minted → Appears in wallet/OpenSea
+```
+
+**Example: Mint Story NFT**
+```typescript
+import { useStoryNFT } from "@/app/hooks/useStoryNFT";
+import { parseEther } from "viem";
+
+const { mintBook } = useStoryNFT();
+
+const handleMint = async (ipfsCID: string) => {
+  const uri = `ipfs://${ipfsCID}`;
+  await mintBook({ uri, value: parseEther("0.001") });
+};
+```
+
+<Tip>
+  See the [NFT Minting Guide](/guides/nft-minting) for a complete walkthrough including metadata preparation.
+</Tip>
+
+### 4. PrivateVerifiedMetrics (CRE Receiver)
+
+**Purpose**: Receive privacy-preserving AI analysis attestations from Chainlink CRE.
+
+**Privacy Model**:
+- **On-chain**: Only cryptographic proofs (tier, threshold, hashes)
+- **Off-chain**: Full metrics stored in Supabase (author-only access)
+
+**Key Functions**:
+- `onReport(bytes metadata, bytes report)` - Receives signed DON reports
+- `getMetrics(bytes32 storyId)` - Returns minimal on-chain proof
+- `verifyAuthor(bytes32 storyId, address author)` - Proves authorship without revealing address
+- `verifyMetricsHash(bytes32 storyId, bytes32 hash)` - Verifies off-chain metrics match commitment
+
+**Data Stored**:
+```solidity
+struct MinimalMetrics {
+    bool meetsQualityThreshold;  // Quality score >= 70
+    uint8 qualityTier;           // 1-5 tier
+    bytes32 metricsHash;         // keccak256(full metrics)
+    bytes32 authorCommitment;    // keccak256(author, storyId)
+    bytes32 attestationId;       // Story identifier
+    uint256 verifiedAt;          // Block timestamp
+    bool exists;                 // Verification exists
+}
+```
+
+<Info>
+  Full story content and detailed metrics **never appear on-chain**. Only cryptographic proofs are publicly visible.
+</Info>
+
+**Example: Check Verification**
+```typescript
+import { useVerifiedMetrics } from "@/app/hooks/useVerifiedMetrics";
+
+const { proof, metrics, isLoading } = useVerifiedMetrics(storyId, isAuthor);
+
+// Everyone sees:
+proof.qualityTier // 1-5
+proof.meetsQualityThreshold // boolean
+
+// Only author sees:
+metrics.significanceScore // 0-100
+metrics.themes // ["growth", "family"]
+```
+
+## Contract Interactions
+
+The contracts work together to create the eStory economy:
+
+```
+┌──────────────┐
+│ eStoryToken  │ ← Used by → ┌──────────────────┐
+│   (ERC20)    │              │ StoryProtocol    │
+└──────────────┘              │  (Tips/Paywall)  │
+                              └──────────────────┘
+                                       ↑
+                                       │ (triggers)
+┌──────────────┐                      │
+│  StoryNFT    │ ← Mints ────────────┤
+│   (ERC721)   │                      │
+└──────────────┘                      │
+       ↓                              │
+  (metadata)                     (story)
+       ↓                              ↓
+┌─────────────────────────────────────────┐
+│         IPFS (Permanent Storage)        │
+└─────────────────────────────────────────┘
+                    ↓
+          ┌──────────────────────┐
+          │ PrivateVerified      │
+          │ Metrics (CRE Proof)  │
+          └──────────────────────┘
+```
+
+## Security Model
+
+### Access Control
+
+All contracts use OpenZeppelin's `AccessControl` for role-based permissions:
+
+| Role | Contracts | Permissions |
+|------|-----------|-------------|
+| **DEFAULT_ADMIN_ROLE** | All | Change settings, grant/revoke roles |
+| **MINTER_ROLE** | eStoryToken, StoryNFT | Mint tokens/NFTs |
+
+<Warning>
+  Admin keys must be secured with hardware wallets (Ledger/Trezor) in production. Never store private keys in `.env` files on servers.
+</Warning>
+
+### Pausability
+
+StoryProtocol includes emergency pause functionality:
+
+```solidity
+function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    _pause();
+}
+
+function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    _unpause();
+}
+```
+
+When paused, all tip and paywall functions revert.
+
+### Upgrade Path
+
+Current contracts are **non-upgradeable** for maximum transparency. Future versions may use:
+- **Proxy patterns** (UUPS/Transparent Proxy) for logic upgrades
+- **Timelock controllers** for 48-hour delay on admin actions
+- **Multisig wallets** (Gnosis Safe) for admin operations
+
+## ABIs and Type Safety
+
+All contract ABIs are defined in `lib/contracts.ts` using viem's type-safe format:
+
+```typescript
+export const STORY_TOKEN_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function transfer(address to, uint256 amount) returns (bool)",
+  // ...
+] as const;
+```
+
+This provides:
+- **TypeScript autocomplete** for function names and parameters
+- **Compile-time type checking** for contract calls
+- **Runtime validation** via viem's ABI parser
+
+<Tip>
+  After deploying new contracts, update `lib/contracts.ts` immediately to keep ABIs in sync.
+</Tip>
+
+## Testing
+
+### Hardhat Local Network
+
+```bash
+# Start local node
+npx hardhat node
+
+# Deploy to local network (terminal 2)
+npx hardhat run scripts/deploy.ts --network localhost
+
+# Run tests
+npx hardhat test
+```
+
+### Testnet (Base Sepolia)
+
+```bash
+# Get testnet ETH from faucet
+https://www.coinbase.com/faucets/base-ethereum-goerli-faucet
+
+# Deploy contracts
+npx hardhat run scripts/deploy.ts --network baseSepolia
+
+# Verify deployment
+npx hardhat run scripts/verify-deployment.ts --network baseSepolia
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deploy Contracts" icon="rocket" href="/contracts/deployment">
+    Learn how to compile, deploy, and verify contracts on Base Sepolia
+  </Card>
+  
+  <Card title="Chainlink CRE" icon="link" href="/integrations/chainlink-cre">
+    Understand the verifiable AI analysis integration
+  </Card>
+  
+  <Card title="NFT Minting" icon="images" href="/guides/nft-minting">
+    Complete guide to minting story collections as NFTs
+  </Card>
+  
+  <Card title="Blockchain Storage" icon="globe" href="/features/blockchain-storage">
+    How IPFS and NFTs provide permanent story storage
+  </Card>
+</CardGroup>
+
+## Resources
+
+- **Basescan Explorer**: [sepolia.basescan.org](https://sepolia.basescan.org)
+- **Base Documentation**: [docs.base.org](https://docs.base.org)
+- **Contract Source**: `~/workspace/source/contracts/`
+- **Deployment Scripts**: `~/workspace/source/scripts/`
+- **Frontend Hooks**: `~/workspace/source/app/hooks/`

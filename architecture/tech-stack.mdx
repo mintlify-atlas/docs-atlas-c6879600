@@ -1,0 +1,447 @@
+---
+title: Technology Stack
+description: Complete technology stack for eStory including frontend, Web3, backend, AI, and testing tools
+---
+
+# Technology Stack
+
+eStory leverages modern web technologies, blockchain infrastructure, and AI services to deliver a production-ready voice journaling dApp.
+
+## Frontend Technologies
+
+### Core Framework
+
+<CardGroup cols={2}>
+  <Card title="Next.js 15.5.9" icon="nextjs">
+    **Purpose:** Full-stack React framework
+    
+    - App Router for file-based routing
+    - Server components for SEO optimization
+    - API routes for serverless functions
+    - Built-in image optimization
+    - `package.json:68`
+  </Card>
+  
+  <Card title="React 19.1.0" icon="react">
+    **Purpose:** UI library
+    
+    - Latest concurrent rendering features
+    - Server components support
+    - Improved hydration handling
+    - `package.json:71`
+  </Card>
+</CardGroup>
+
+### Styling & UI
+
+<Accordion title="Tailwind CSS 4" icon="palette">
+  **Purpose:** Utility-first CSS framework
+  
+  - Dark/light mode via `class` strategy
+  - Custom design tokens in `tailwind.config.ts`
+  - PostCSS 8.4.30 for processing
+  - Tailwind Animate plugin for animations
+  - `package.json:112`
+  
+  ```bash
+  # Installed plugins
+  tailwindcss-animate@1.0.7
+  tw-animate-css@1.4.0
+  ```
+</Accordion>
+
+<Accordion title="shadcn/ui" icon="component">
+  **Purpose:** Accessible component library
+  
+  - 30+ Radix UI primitives (`@radix-ui/*` packages)
+  - Customizable via `components/ui/`
+  - Fully typed with TypeScript
+  - Class Variance Authority for variants
+  - Configuration: `components.json`
+  
+  **Components Used:**
+  - Accordion, AlertDialog, Avatar, Button, Card
+  - Checkbox, Dialog, Dropdown, Form, Input
+  - Label, Popover, Progress, ScrollArea, Select
+  - Separator, Slider, Switch, Tabs, Toast, Tooltip
+</Accordion>
+
+<Accordion title="Framer Motion 12.23.22" icon="sparkles">
+  **Purpose:** Animation library
+  
+  - Page transitions and component animations
+  - Used in 19+ files across the app
+  - Bundle size: ~45 kB (optimized via `next.config.mjs`)
+  - `package.json:65`
+  
+  <Warning>
+    Consider replacing simple `motion.div whileHover` with Tailwind `hover:scale-105 transition-transform` to reduce bundle size by ~40 kB per page.
+  </Warning>
+</Accordion>
+
+### Icons & Assets
+
+- **Lucide React 0.446.0** — 1,000+ consistent SVG icons (`package.json:67`)
+- **Three.js 0.182.0** + `@react-three/fiber` + `@react-three/drei` — 3D animated background (`package.json:80`)
+
+## Web3 & Blockchain Technologies
+
+### Wallet Integration
+
+<CardGroup cols={3}>
+  <Card title="Wagmi 2.17.5" icon="ethereum">
+    React hooks for Ethereum
+    
+    - useAccount, useBalance
+    - useReadContract, useWriteContract
+    - Multi-chain support
+    - `package.json:83`
+  </Card>
+  
+  <Card title="Viem 2.38.0" icon="code">
+    TypeScript Ethereum library
+    
+    - Contract ABI encoding/decoding
+    - Message signing/verification
+    - Transaction building
+    - `package.json:82`
+  </Card>
+  
+  <Card title="RainbowKit 2.2.8" icon="wallet">
+    Wallet connection UI
+    
+    - 100+ wallet connectors
+    - Beautiful modal UI
+    - Theme-aware components
+    - `package.json:50`
+  </Card>
+</CardGroup>
+
+### Smart Contract Development
+
+<Accordion title="Hardhat 2.27.1" icon="hammer">
+  **Purpose:** Solidity development environment
+  
+  - Contract compilation and deployment
+  - Network configuration for Base Sepolia
+  - Testing and verification scripts
+  - Configuration: `hardhat.config.ts`
+  - `package.json:108`
+  
+  ```bash
+  # Development commands
+  npx hardhat compile
+  npx hardhat run scripts/deploy.ts --network baseSepolia
+  npx hardhat run scripts/verify-deployment.ts --network baseSepolia
+  ```
+</Accordion>
+
+<Accordion title="OpenZeppelin Contracts 5.4.0" icon="shield-check">
+  **Purpose:** Audited smart contract library
+  
+  - ERC20, ERC721, ERC2981 implementations
+  - AccessControl, Pausable, ReentrancyGuard
+  - SafeERC20 for safe token transfers
+  - Used in all three contracts (eStoryToken, StoryProtocol, StoryNFT)
+  - `package.json:21`
+</Accordion>
+
+### Chainlink CRE (Verifiable Compute)
+
+- **@chainlink/mcp-server 0.0.1-alpha.17** — CRE workflow SDK for privacy-preserving AI attestation (`package.json:16`)
+- Workflow files: `cre/iStory_workflow/main.ts`, `gemini.ts`, `httpCallback.ts`
+- Contracts: `contracts/PrivateVerifiedMetrics.sol`, `contracts/legacy/VerifiedMetrics.sol`
+
+## Backend & Database
+
+### Supabase Stack
+
+<CardGroup cols={2}>
+  <Card title="@supabase/supabase-js 2.76.1" icon="database">
+    PostgreSQL client for Next.js
+    
+    - Real-time subscriptions
+    - Row Level Security (RLS)
+    - Authentication (OAuth + JWT)
+    - File storage (story-audio bucket)
+    - `package.json:56`
+  </Card>
+  
+  <Card title="@supabase/ssr 0.7.0" icon="server">
+    Server-side Supabase utilities
+    
+    - Cookie-based session handling
+    - SSR-safe client creation
+    - Used in `app/utils/supabase/supabaseServer.ts`
+    - `package.json:55`
+  </Card>
+</CardGroup>
+
+### Client Variants
+
+| File | Use Case | Auth Method |
+|------|----------|-------------|
+| `app/utils/supabase/supabaseClient.ts` | Browser/client components | User session (RLS enforced) |
+| `app/utils/supabase/supabaseServer.ts` | API routes, SSR | Cookies (RLS enforced) |
+| `app/utils/supabase/supabaseAdmin.ts` | Admin operations | Service role key (RLS bypassed) |
+
+<Warning>
+  **NEVER** initialize Supabase client at module scope in API routes. Use a lazy factory/singleton pattern to avoid build-time failures when env vars are unavailable. See `CLAUDE.md:350-360` for the pattern.
+</Warning>
+
+### Local Storage (Client-Side Encryption)
+
+<Accordion title="Dexie.js 4.3.0" icon="hard-drive">
+  **Purpose:** IndexedDB wrapper for local encrypted storage
+  
+  - Database: `estory-vault`
+  - Stores encrypted stories with AES-256-GCM
+  - Reactive queries via `dexie-react-hooks@4.2.0`
+  - Schema: `lib/vault/db.ts`
+  - `package.json:62-63`
+  
+  **Tables:**
+  - `stories` — Encrypted story records
+  - `vaultKeys` — Wrapped DEKs (Data Encryption Keys)
+  - `syncQueue` — Pending cloud sync operations
+</Accordion>
+
+<Accordion title="Web Crypto API" icon="lock">
+  **Purpose:** Browser-native encryption
+  
+  - AES-256-GCM for story encryption
+  - PBKDF2 (100K iterations) for PIN → KEK derivation
+  - AES-KW for DEK wrapping
+  - SHA-256 for integrity checksums
+  - Implementation: `lib/vault/crypto.ts`, `lib/vault/keyManager.ts`
+  
+  <Note>
+    All crypto operations are browser-only (`window.crypto.subtle`). Never import vault modules in API routes or server components.
+  </Note>
+</Accordion>
+
+## AI & External Services
+
+### AI Services
+
+<CardGroup cols={3}>
+  <Card title="ElevenLabs Scribe" icon="microphone">
+    **Speech-to-Text**
+    
+    - SDK: `@elevenlabs/elevenlabs-js@2.24.1`
+    - Max file size: 25 MB
+    - Used in `/api/ai/transcribe`
+    - `package.json:17`
+  </Card>
+  
+  <Card title="Google Gemini 2.5 Flash" icon="sparkles">
+    **Text Enhancement & Analysis**
+    
+    - SDK: `@google/generative-ai@0.24.1`
+    - Used in `/api/ai/enhance` and `/api/ai/analyze`
+    - Max input: 50K characters
+    - `package.json:18`
+  </Card>
+  
+  <Card title="Anthropic Claude" icon="brain">
+    **Thinking Agent**
+    
+    - SDK: `@anthropic-ai/sdk@0.71.2`
+    - Used in `scripts/think.ts` for complex problem-solving
+    - Extended thinking mode support
+    - `package.json:15`
+  </Card>
+</CardGroup>
+
+### Infrastructure Services
+
+<Accordion title="Pinata (IPFS)" icon="cloud-upload">
+  **Purpose:** Decentralized file storage
+  
+  - Used for NFT metadata and story content
+  - Max file size: 50 MB
+  - MIME type whitelist enforced
+  - API endpoint: `/api/ipfs/upload`
+  - Service: `app/utils/ipfsService.ts`
+</Accordion>
+
+<Accordion title="Resend 6.5.2" icon="email">
+  **Purpose:** Transactional email service
+  
+  - React Email components for templates
+  - Used for notifications and onboarding
+  - API endpoint: `/api/email/send`
+  - Service: `app/utils/emailService.ts`
+  - `package.json:77`
+</Accordion>
+
+## Testing Infrastructure
+
+### Unit Testing
+
+<CardGroup cols={2}>
+  <Card title="Vitest 4.0.15" icon="test-tube">
+    Fast unit test runner
+    
+    - Vite-powered (faster than Jest)
+    - ESM and TypeScript support
+    - Configuration: `vitest.config.ts`
+    - Coverage: `@vitest/coverage-v8@4.0.17`
+    - `package.json:116`
+  </Card>
+  
+  <Card title="React Testing Library 16.3.0" icon="flask">
+    Component testing utilities
+    
+    - User-centric testing patterns
+    - `@testing-library/jest-dom@6.9.1` for matchers
+    - `@testing-library/user-event@14.6.1` for interactions
+    - Mock IndexedDB: `fake-indexeddb@6.2.5`
+    - `package.json:93`
+  </Card>
+</CardGroup>
+
+```bash
+# Run unit tests
+npx vitest              # Watch mode
+npx vitest run          # Run once
+npx vitest run --coverage  # With coverage report
+```
+
+### E2E Testing
+
+<Accordion title="Playwright 1.57.0" icon="browser">
+  **Purpose:** End-to-end browser testing
+  
+  - Tests on Chrome, Firefox, Safari
+  - Configuration: `playwright.config.ts`
+  - Test server runs on port 3001
+  - Test files: `e2e/*.spec.ts`
+  - `package.json:89`
+  
+  ```bash
+  # Run E2E tests
+  npx playwright test                    # Headless
+  npx playwright test --ui               # Interactive UI
+  npx playwright test --project=chromium # Single browser
+  ```
+</Accordion>
+
+## Development Tools
+
+### Build & Lint
+
+- **TypeScript 5** — Type-safe development (`package.json:115`)
+- **ESLint 9** + `eslint-config-next@15.5.7` — Code linting (`package.json:105-106`)
+- **PostCSS 8.4.30** — CSS processing (`package.json:110`)
+- **Autoprefixer 10.4.15** — Vendor prefixes (`package.json:103`)
+
+### Form & Validation
+
+- **react-hook-form 7.63.0** — Form state management (`package.json:74`)
+- **@hookform/resolvers 3.10.0** — Zod schema integration (`package.json:19`)
+- **Zod 3.25.76** — Schema validation (`package.json:84`)
+
+### UI Utilities
+
+- **clsx 2.1.1** + **tailwind-merge 2.6.0** — Conditional class merging (`package.json:59, 79`)
+- **class-variance-authority 0.7.1** — Component variants (`package.json:58`)
+- **date-fns 3.6.0** — Date formatting (`package.json:61`)
+- **cmdk 1.0.0** — Command palette (`package.json:60`)
+- **sonner 1.5.0** + **react-hot-toast 2.6.0** — Toast notifications (`package.json:78, 75`)
+
+## Package Size Analysis
+
+### Bundle Budget (First Load JS)
+
+| Page | Size | Status |
+|------|------|--------|
+| **Shared (all pages)** | 104 kB | ✅ Optimized |
+| Landing | 426 kB | ✅ Under budget |
+| Record | 467 kB | ✅ Under budget |
+| Library | 462 kB | ✅ Under budget |
+| Profile | 498 kB | ⚠️ Near limit |
+| Social | 462 kB | ✅ Under budget |
+
+<Note>
+  **Target:** Keep all pages under 500 kB First Load JS. Red flag if any page exceeds this.
+</Note>
+
+### Heavy Dependencies (Unavoidable)
+
+<CardGroup cols={3}>
+  <Card title="Web3 Stack" icon="ethereum">
+    ~200 kB
+    
+    wagmi + viem + RainbowKit loaded in shared Provider for wallet auth. Cannot split without breaking auth flow.
+  </Card>
+  
+  <Card title="Three.js Background" icon="cube">
+    ~120 kB
+    
+    Already dynamically loaded (`ssr: false`), has capability detection to skip on weak devices.
+  </Card>
+  
+  <Card title="Framer Motion" icon="sparkles">
+    ~45 kB
+    
+    Used in 19 files for animations. Replaceable with Tailwind transitions for simple cases.
+  </Card>
+</CardGroup>
+
+## Environment Variables
+
+```bash
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+
+# AI Services
+GOOGLE_GENERATIVE_AI_API_KEY=your_google_gemini_key
+ELEVENLABS_API_KEY=your_elevenlabs_key
+ANTHROPIC_API_KEY=your_anthropic_key
+
+# Web3 & Blockchain
+NEXT_PUBLIC_PROJECT_ID=your_walletconnect_project_id
+NEXT_PUBLIC_ESTORY_TOKEN_ADDRESS=0x...
+NEXT_PUBLIC_STORY_PROTOCOL_ADDRESS=0x...
+NEXT_PUBLIC_STORY_NFT_ADDRESS=0x...
+
+# Hardhat (deployment only)
+PRIVATE_KEY=your_deployer_private_key
+BASESCAN_API_KEY=your_basescan_key
+
+# External Services
+PINATA_API_KEY=your_pinata_key
+PINATA_SECRET_API_KEY=your_pinata_secret
+RESEND_API_KEY=your_resend_key
+
+# Security
+CRON_SECRET=your_cron_secret
+ADMIN_SECRET=your_admin_secret
+```
+
+<Warning>
+  In production, use Vercel environment variables with scoped access. Never commit `.env.local` to version control.
+</Warning>
+
+## Version Compatibility
+
+| Dependency | Min Version | Notes |
+|------------|-------------|-------|
+| Node.js | 18+ | Required for Next.js 15 |
+| npm | 9+ | Uses package-lock.json v3 |
+| PostgreSQL | 15+ | Via Supabase (managed) |
+| Solidity | 0.8.20+ | OpenZeppelin 5.x requires ^0.8.20 |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="System Architecture" icon="diagram" href="/architecture/overview">
+    Provider stack, data flow, and application structure
+  </Card>
+  <Card title="Security Architecture" icon="shield" href="/architecture/security">
+    5-layer security model and authentication flows
+  </Card>
+</CardGroup>

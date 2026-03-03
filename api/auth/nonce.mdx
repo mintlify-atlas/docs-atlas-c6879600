@@ -1,0 +1,57 @@
+---
+title: "Get Nonce"
+api: "GET /api/auth/nonce"
+description: "Generate a server-side nonce for wallet signature verification"
+authMethod: "none"
+---
+
+Generates a unique nonce and message for wallet signature authentication. This endpoint does not require authentication and should be called before the login endpoint.
+
+## Query Parameters
+
+<ParamField query="address" type="string" required>
+  Ethereum wallet address (case-insensitive)
+</ParamField>
+
+## Response
+
+<ResponseField name="message" type="string">
+  Pre-formatted message containing the nonce, address, timestamp, and expiry. This message should be signed by the wallet.
+</ResponseField>
+
+<ResponseField name="nonce" type="string">
+  UUID v4 nonce value (expires in 5 minutes)
+</ResponseField>
+
+## Example Request
+
+```bash cURL
+curl -X GET "https://estory.app/api/auth/nonce?address=0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
+```
+
+## Example Response
+
+```json
+{
+  "message": "Welcome to EStory\n\nSign this message to log in securely.\n\nSite: eStory\nAddress: 0x742d35cc6634c0532925a3b844bc9e7595f0beb\n\nNo transaction · No gas fees · Completely free\n\nNonce: a1b2c3d4-e5f6-7890-1234-567890abcdef\nTimestamp: 2026-03-03T10:30:00.000Z\nExpires: 2026-03-03T10:35:00.000Z",
+  "nonce": "a1b2c3d4-e5f6-7890-1234-567890abcdef"
+}
+```
+
+## Security
+
+- Nonces are stored server-side with a 5-minute expiration
+- Each nonce can only be used once (replay prevention)
+- Expired nonces are automatically cleaned up
+- Address is normalized to lowercase
+
+## Error Responses
+
+<ResponseField name="error" type="string">
+  Error message
+</ResponseField>
+
+| Status Code | Description |
+|-------------|-------------|
+| 400 | Missing address parameter |
+| 500 | Internal server error |

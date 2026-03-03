@@ -1,0 +1,352 @@
+---
+title: "StoryProtocol"
+description: "On-chain tips and paywall payment system for eStory creators"
+---
+
+## Overview
+
+The **StoryProtocol** contract facilitates two core economic interactions in the eStory ecosystem:
+1. **Tips** - Users can send $ESTORY tokens to creators to show appreciation
+2. **Paywall Payments** - Users can pay $ESTORY to unlock paywalled content
+
+All payments are direct peer-to-peer transfers (sender → recipient) with no platform fees. The contract emits events that the backend indexes to update user balances and unlock content in Supabase.
+
+**Contract Address (Base Sepolia):** `0xA51a4cA0...`
+
+## Features
+
+### Direct Peer-to-Peer Transfers
+- No escrow or intermediate holding of funds
+- Tokens transfer directly from sender to recipient
+- No platform fees (100% goes to creator)
+
+### Backend Indexing
+- Emits `TipSent` and `ContentUnlocked` events
+- Backend listens to events and updates Supabase records
+- Off-chain database reflects on-chain truth
+
+### Security
+- **ReentrancyGuard**: Prevents reentrancy attacks on payment functions
+- **SafeERC20**: Uses OpenZeppelin's `safeTransferFrom` to prevent silent transfer failures
+- **Pausable**: Can be paused by PAUSER_ROLE in emergencies
+- **Access Control**: Role-based permissions for admin operations
+
+## Constructor
+
+```solidity
+constructor(address _tokenAddress, address initialAdmin)
+```
+
+<ParamField path="_tokenAddress" type="address">
+  Address of the eStoryToken (ERC20) contract
+</ParamField>
+
+<ParamField path="initialAdmin" type="address">
+  Receives DEFAULT_ADMIN_ROLE and PAUSER_ROLE
+</ParamField>
+
+## State Variables
+
+<ParamField path="storyToken" type="IERC20">
+  Immutable reference to the eStoryToken contract
+</ParamField>
+
+<ParamField path="PAUSER_ROLE" type="bytes32">
+  Role identifier for addresses that can pause/unpause the contract
+</ParamField>
+
+## Events
+
+<Accordion title="TipSent">
+  Emitted when a user tips a creator.
+
+  ```solidity
+  event TipSent(
+      address indexed from,    // Sender address
+      address indexed to,      // Creator address
+      uint256 amount,          // Amount of ESTORY tokens (in wei)
+      uint256 indexed storyId  // ID of the story being tipped
+  );
+  ```
+
+  **Indexed Parameters:** `from`, `to`, `storyId` (efficient filtering in event logs)
+</Accordion>
+
+<Accordion title="ContentUnlocked">
+  Emitted when a user pays to unlock paywalled content.
+
+  ```solidity
+  event ContentUnlocked(
+      address indexed payer,     // User who paid
+      address indexed author,    // Content author receiving payment
+      uint256 amount,            // Amount paid (in wei)
+      uint256 indexed contentId  // ID of the unlocked content
+  );
+  ```
+
+  **Backend Action:** Indexes this event to grant the payer access to `contentId` in Supabase.
+</Accordion>
+
+## Functions
+
+<Accordion title="tipCreator(address creator, uint256 amount, uint256 storyId)">
+  Send $ESTORY tokens to a creator as a tip.
+
+  **Access:** `public`, `nonReentrant`, `whenNotPaused`
+
+  **Parameters:**
+  - `creator` (address) - Recipient creator's wallet address
+  - `amount` (uint256) - Tip amount in wei (e.g., 10 tokens = 10e18)
+  - `storyId` (uint256) - ID of the story being tipped (for analytics)
+
+  **Requirements:**
+  - `amount > 0`
+  - `creator != address(0)`
+  - Caller must have approved this contract to spend `amount` of ESTORY tokens
+  - Caller must have sufficient ESTORY balance
+  - Contract must not be paused
+
+  **Implementation:**
+  ```solidity
+  function tipCreator(address creator, uint256 amount, uint256 storyId) 
+      external 
+      nonReentrant 
+      whenNotPaused 
+  {
+      require(amount > 0, "Amount must be > 0");
+      require(creator != address(0), "Invalid creator address");
+      
+      // Safe transfer from Sender -> Creator
+      storyToken.safeTransferFrom(msg.sender, creator, amount);
+
+      emit TipSent(msg.sender, creator, amount, storyId);
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  import { useStoryProtocol } from '@/app/hooks/useStoryProtocol';
+  import { ethers } from 'ethers';
+
+  function TipButton({ creatorAddress, storyId }) {
+    const { tipCreator } = useStoryProtocol();
+    
+    const handleTip = async () => {
+      const amount = ethers.parseEther("10"); // 10 ESTORY
+      await tipCreator(creatorAddress, amount, storyId);
+    };
+    
+    return <button onClick={handleTip}>Tip 10 ESTORY</button>;
+  }
+  ```
+</Accordion>
+
+<Accordion title="payPaywall(address author, uint256 amount, uint256 contentId)">
+  Pay to unlock paywalled content. Backend listens for the `ContentUnlocked` event to grant access in Supabase.
+
+  **Access:** `public`, `nonReentrant`, `whenNotPaused`
+
+  **Parameters:**
+  - `author` (address) - Content author receiving payment
+  - `amount` (uint256) - Paywall price in wei
+  - `contentId` (uint256) - ID of the content to unlock
+
+  **Requirements:**
+  - `amount > 0`
+  - `author != address(0)`
+  - Caller must have approved this contract to spend `amount` of ESTORY tokens
+  - Caller must have sufficient ESTORY balance
+  - Contract must not be paused
+
+  **Implementation:**
+  ```solidity
+  function payPaywall(address author, uint256 amount, uint256 contentId) 
+      external 
+      nonReentrant 
+      whenNotPaused 
+  {
+      require(amount > 0, "Amount must be > 0");
+      require(author != address(0), "Invalid author address");
+
+      // Safe transfer from Payer -> Author
+      storyToken.safeTransferFrom(msg.sender, author, amount);
+
+      emit ContentUnlocked(msg.sender, author, amount, contentId);
+  }
+  ```
+
+  **Backend Event Listener (Conceptual):**
+  ```typescript
+  // Backend service listens for ContentUnlocked events
+  storyProtocol.on('ContentUnlocked', async (payer, author, amount, contentId) => {
+    await supabase
+      .from('content_access')
+      .insert({
+        user_address: payer,
+        content_id: contentId,
+        paid_amount: ethers.formatEther(amount),
+        unlocked_at: new Date().toISOString()
+      });
+  });
+  ```
+</Accordion>
+
+<Accordion title="pause()">
+  Pauses all payment functions (`tipCreator`, `payPaywall`). Only callable by PAUSER_ROLE holders.
+
+  **Access:** `onlyRole(PAUSER_ROLE)`
+
+  **Effects:**
+  - All payment functions revert with "Pausable: paused"
+  - Used in emergencies (security incident, token contract upgrade)
+
+  ```solidity
+  function pause() external onlyRole(PAUSER_ROLE) {
+      _pause();
+  }
+  ```
+</Accordion>
+
+<Accordion title="unpause()">
+  Unpauses payment functions. Only callable by PAUSER_ROLE holders.
+
+  **Access:** `onlyRole(PAUSER_ROLE)`
+
+  ```solidity
+  function unpause() external onlyRole(PAUSER_ROLE) {
+      _unpause();
+  }
+  ```
+</Accordion>
+
+## Payment Flow
+
+### Tipping Flow
+1. User clicks "Tip Creator" on a story
+2. Frontend calls `eStoryToken.approve(STORY_PROTOCOL_ADDRESS, amount)`
+3. User confirms approval transaction
+4. Frontend calls `storyProtocol.tipCreator(creatorAddress, amount, storyId)`
+5. Contract transfers tokens from user → creator
+6. Contract emits `TipSent` event
+7. Backend indexes event and updates creator's earnings in Supabase
+
+### Paywall Flow
+1. User clicks "Unlock Story" on paywalled content
+2. Frontend calls `eStoryToken.approve(STORY_PROTOCOL_ADDRESS, paywallPrice)`
+3. User confirms approval transaction
+4. Frontend calls `storyProtocol.payPaywall(authorAddress, paywallPrice, contentId)`
+5. Contract transfers tokens from user → author
+6. Contract emits `ContentUnlocked` event
+7. Backend indexes event and grants user access to content in Supabase
+8. Frontend refetches content and displays it to user
+
+## Security Architecture
+
+### SafeERC20
+Uses OpenZeppelin's `SafeERC20` wrapper to prevent silent transfer failures:
+```solidity
+using SafeERC20 for IERC20;
+```
+If a transfer fails (insufficient balance, reverts in token contract), the entire transaction reverts instead of returning `false`.
+
+### ReentrancyGuard
+Both payment functions use `nonReentrant` modifier to prevent reentrancy attacks:
+```solidity
+function tipCreator(...) external nonReentrant whenNotPaused { ... }
+```
+Prevents a malicious recipient contract from calling back into the StoryProtocol during token transfer.
+
+### Checks-Effects-Interactions
+Follows the CEI pattern:
+1. **Checks**: Validate inputs (`amount > 0`, `creator != address(0)`)
+2. **Effects**: (None - no state changes in this contract)
+3. **Interactions**: External call to `storyToken.safeTransferFrom()`
+
+### No Ether Handling
+Contract does not accept or hold ETH (only ERC20 tokens). No `receive()` or `fallback()` functions.
+
+## Integration Examples
+
+### Frontend: Tip Creator
+```typescript
+import { useStoryProtocol } from '@/app/hooks/useStoryProtocol';
+import { useEStoryToken } from '@/app/hooks/useEStoryToken';
+import { ethers } from 'ethers';
+import { STORY_PROTOCOL_ADDRESS } from '@/lib/contracts';
+
+function TipFlow({ creatorAddress, storyId }) {
+  const { approve } = useEStoryToken();
+  const { tipCreator } = useStoryProtocol();
+  const [step, setStep] = useState<'approve' | 'tip'>('approve');
+  
+  const handleTip = async () => {
+    const amount = ethers.parseEther("10");
+    
+    // Step 1: Approve
+    if (step === 'approve') {
+      await approve(STORY_PROTOCOL_ADDRESS, amount);
+      setStep('tip');
+      return;
+    }
+    
+    // Step 2: Tip
+    await tipCreator(creatorAddress, amount, storyId);
+    toast.success('Tip sent!');
+  };
+  
+  return (
+    <button onClick={handleTip}>
+      {step === 'approve' ? 'Approve ESTORY' : 'Send Tip'}
+    </button>
+  );
+}
+```
+
+### Backend: Index TipSent Events
+```typescript
+import { ethers } from 'ethers';
+import { STORY_PROTOCOL_ADDRESS, STORY_PROTOCOL_ABI } from '@/lib/contracts';
+import { createSupabaseAdminClient } from '@/app/utils/supabase/supabaseAdmin';
+
+const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC);
+const contract = new ethers.Contract(STORY_PROTOCOL_ADDRESS, STORY_PROTOCOL_ABI, provider);
+
+contract.on('TipSent', async (from, to, amount, storyId) => {
+  const supabase = createSupabaseAdminClient();
+  
+  await supabase.from('tips').insert({
+    sender_address: from,
+    creator_address: to,
+    amount_wei: amount.toString(),
+    amount_tokens: ethers.formatEther(amount),
+    story_id: storyId.toString(),
+    tx_hash: event.transactionHash,
+    created_at: new Date().toISOString()
+  });
+  
+  console.log(`Indexed tip: ${ethers.formatEther(amount)} ESTORY from ${from} to ${to}`);
+});
+```
+
+## Source Code
+
+View the full contract implementation:
+`/workspace/source/contracts/StoryProtocol.sol:1`
+
+```solidity
+contract StoryProtocol is ReentrancyGuard, Pausable, AccessControl {
+    using SafeERC20 for IERC20;
+
+    IERC20 public immutable storyToken;
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+
+    event TipSent(address indexed from, address indexed to, uint256 amount, uint256 indexed storyId);
+    event ContentUnlocked(address indexed payer, address indexed author, uint256 amount, uint256 indexed contentId);
+
+    constructor(address _tokenAddress, address initialAdmin) {
+        storyToken = IERC20(_tokenAddress);
+        _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
+        _grantRole(PAUSER_ROLE, initialAdmin);
+    }
+}
+```

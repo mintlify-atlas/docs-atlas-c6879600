@@ -1,0 +1,311 @@
+---
+title: "Rate Limiting"
+description: "Understanding eStory's API rate limiting system"
+---
+
+## Overview
+
+eStory implements **route-specific rate limiting** to protect against abuse and ensure fair usage. Rate limits are enforced via middleware (`middleware.ts`) using an in-memory tracking system.
+
+## Rate Limits by Route
+
+| Route Pattern | Limit | Window | Reason |
+|--------------|-------|--------|--------|
+| `/api/ai/*` | **10 requests** | 1 minute | Expensive AI API calls (Gemini, ElevenLabs) |
+| `/api/auth/*` | **20 requests** | 1 minute | Prevent brute force attacks |
+| `/api/cre/callback` | **30 requests** | 1 minute | Multiple DON nodes call per verification |
+| `/api/email/send` | **5 requests** | 1 minute | Prevent email spam |
+| `/api/waitlist` | **10 requests** | 1 minute | Public endpoint, no auth required |
+| `/api/*` (default) | **60 requests** | 1 minute | All other API routes |
+| Non-API routes | **No limit** | — | Pages, static assets |
+
+<Note>
+  Rate limits are **per IP address** and reset every minute. Limits are grouped by path prefix (e.g., all `/api/ai/*` routes share the same bucket).
+</Note>
+
+## How Rate Limiting Works
+
+### Implementation
+
+Rate limiting is implemented in `middleware.ts` using an **in-memory Map**:
+
+1. **Request arrives** → Extract IP from `x-forwarded-for` header
+2. **Check limit** → Lookup `IP:path-prefix` in rate limit map
+3. **Within limit?** → Allow request, increment counter
+4. **Exceeded?** → Return 429 error with `Retry-After` header
+5. **Cleanup** → Periodically remove expired entries
+
+### Key Determination
+
+Rate limits use **IP + path prefix** as the key:
+
+```typescript
+const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+const pathPrefix = pathname.split("/").slice(0, 4).join("/"); // e.g., "/api/ai"
+const rateLimitKey = `${ip}:${pathPrefix}`;
+```
+
+**Example:**
+- User at `192.168.1.1` calls `/api/ai/transcribe` → Key: `192.168.1.1:/api/ai`
+- Same user calls `/api/ai/analyze` → Same key (shared bucket)
+- Different user at `192.168.1.2` calls `/api/ai/transcribe` → Different key
+
+### Window Reset
+
+Rate limit windows are **rolling windows** that reset 60 seconds after the first request:
+
+```
+Request 1 at 12:00:00 → Window starts
+Request 10 at 12:00:30 → Still within window
+Request 11 at 12:00:45 → Rate limit exceeded (429)
+Request 12 at 12:01:01 → New window starts, allowed
+```
+
+## Rate Limit Headers
+
+All API responses include rate limit headers:
+
+```http
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 42
+```
+
+<ParamField header="X-RateLimit-Limit" type="number">
+  Maximum requests allowed in the current window
+</ParamField>
+
+<ParamField header="X-RateLimit-Remaining" type="number">
+  Remaining requests in the current window
+</ParamField>
+
+### When Rate Limit is Exceeded
+
+If you exceed the rate limit, the API returns a **429 Too Many Requests** response:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 42
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 0
+Content-Type: application/json
+
+{
+  "error": "Too many requests. Please try again later."
+}
+```
+
+<ParamField header="Retry-After" type="number">
+  Seconds until the rate limit window resets
+</ParamField>
+
+## Rate Limit Examples
+
+### AI Endpoints (10/min)
+
+```javascript
+// Transcribe audio (counts toward /api/ai/* limit)
+const transcribeResponse = await fetch('/api/ai/transcribe', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` },
+  body: formData
+});
+
+// Analyze story (shares same limit)
+const analyzeResponse = await fetch('/api/ai/analyze', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` },
+  body: JSON.stringify({ storyId, storyText })
+});
+
+// After 10 requests in 1 minute:
+// { "error": "Too many requests. Please try again later." }
+```
+
+### Authentication Endpoints (20/min)
+
+```javascript
+// Fetch nonce (counts toward /api/auth/* limit)
+const nonceResponse = await fetch(`/api/auth/nonce?address=${address}`);
+
+// Login with signature (shares same limit)
+const loginResponse = await fetch('/api/auth/login', {
+  method: 'POST',
+  body: JSON.stringify({ address, signature, nonce })
+});
+
+// After 20 requests in 1 minute:
+// { "error": "Too many requests. Please try again later." }
+```
+
+## Handling Rate Limits in Code
+
+### Check Rate Limit Headers
+
+```javascript
+async function callAPI(url, options) {
+  const response = await fetch(url, options);
+  
+  const limit = response.headers.get('X-RateLimit-Limit');
+  const remaining = response.headers.get('X-RateLimit-Remaining');
+  
+  console.log(`Rate limit: ${remaining}/${limit} remaining`);
+  
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('Retry-After');
+    throw new Error(`Rate limited. Retry after ${retryAfter} seconds`);
+  }
+  
+  return response.json();
+}
+```
+
+### Implement Retry Logic
+
+```javascript
+async function callAPIWithRetry(url, options, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const response = await fetch(url, options);
+    
+    if (response.status === 429) {
+      const retryAfter = parseInt(response.headers.get('Retry-After') || '60', 10);
+      console.warn(`Rate limited. Retrying after ${retryAfter}s...`);
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      continue;
+    }
+    
+    return response.json();
+  }
+  
+  throw new Error('Max retries exceeded');
+}
+```
+
+### Batch Requests
+
+For AI analysis, batch multiple operations to stay within limits:
+
+```javascript
+// Bad: 3 separate requests (uses 3/10 AI rate limit)
+await fetch('/api/ai/transcribe', { ... });
+await fetch('/api/ai/enhance', { ... });
+await fetch('/api/ai/analyze', { ... });
+
+// Better: Use a single endpoint that handles all operations
+await fetch('/api/journal/save', {
+  method: 'POST',
+  body: JSON.stringify({
+    audio: audioBlob,
+    shouldTranscribe: true,
+    shouldEnhance: true,
+    shouldAnalyze: true
+  })
+});
+```
+
+## Rate Limit Bypass
+
+<Warning>
+  Rate limits **cannot be bypassed** for security reasons. If you have legitimate high-volume use cases, contact the eStory team for API key access or dedicated infrastructure.
+</Warning>
+
+### Exemptions
+
+The following routes are **exempt from rate limiting**:
+
+- Static assets (`/images/*`, `/fonts/*`, etc.)
+- Next.js internal routes (`/_next/*`)
+- Page routes (`/`, `/library`, `/record`, etc.)
+
+### CRE Callback Exception
+
+The `/api/cre/callback` endpoint has a higher limit (30/min) because:
+
+1. **Multiple DON nodes** call it per verification (5-10 nodes)
+2. **Single story** may trigger 5-10 callbacks in quick succession
+3. **Internal endpoint** — Only called by Chainlink DON, not public
+
+## In-Memory Tracking
+
+Rate limits are tracked **in-memory** (not persisted to database):
+
+**Pros:**
+- Fast lookups (no database queries)
+- No database load
+- Simple implementation
+
+**Cons:**
+- Resets on server restart
+- Not shared across multiple servers (serverless/edge)
+
+**Cleanup:**
+- Expired entries are removed every 2 minutes
+- Prevents memory leaks from storing old data
+
+```typescript
+function cleanupIfNeeded() {
+  const now = Date.now();
+  if (now - lastCleanup > WINDOW_MS * 2) {
+    for (const [key, entry] of rateLimitStore) {
+      if (now - entry.windowStart > WINDOW_MS) {
+        rateLimitStore.delete(key);
+      }
+    }
+    lastCleanup = now;
+  }
+}
+```
+
+## Production Considerations
+
+### Serverless/Edge Functions
+
+In serverless environments (Vercel, Netlify, etc.), each function instance has its own memory:
+
+- **Cold starts** → Rate limit state is lost
+- **Multiple instances** → Limits are per-instance, not global
+- **Solution** → Use external rate limiting (Redis, Upstash, etc.)
+
+<Note>
+  For production deployments with high traffic, consider using a distributed rate limiting solution like Redis or Upstash Rate Limit.
+</Note>
+
+### IP Detection
+
+The middleware extracts IP from these headers (in order):
+
+1. `x-forwarded-for` (reverse proxy, load balancer)
+2. `x-real-ip` (some proxies)
+3. `"unknown"` (fallback)
+
+**Vercel:** Automatically sets `x-forwarded-for` with the client's real IP.
+
+**Local development:** IP will be `::1` or `127.0.0.1` (localhost).
+
+## Testing Rate Limits
+
+To test rate limits in development:
+
+```bash
+# Test AI endpoint (10/min limit)
+for i in {1..15}; do
+  curl -X POST http://localhost:3000/api/ai/analyze \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"storyId":"123","storyText":"Test story..."}'
+  echo "Request $i"
+done
+
+# After 10 requests, you should see:
+# {"error":"Too many requests. Please try again later."}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/api/authentication">
+    Learn how to authenticate API requests
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/api/error-handling">
+    Handle rate limit errors gracefully
+  </Card>
+</CardGroup>

@@ -1,0 +1,592 @@
+---
+title: "PrivateVerifiedMetrics (Current)"
+description: "Privacy-preserving CRE-attested story metrics with minimal on-chain data"
+---
+
+## Overview
+
+The **PrivateVerifiedMetrics** contract provides privacy-preserving attestation of AI-verified story quality metrics using Chainlink CRE (Compute Runtime Environment). Unlike the legacy **VerifiedMetrics** contract, this version stores only **minimal cryptographic proofs** on-chain while keeping full metrics off-chain.
+
+**Contract Address (Base Sepolia):** `0x158e08BC...`
+
+## Privacy Design
+
+### What's On-Chain (Public)
+- **Quality Tier** (1-5): Coarse-grained quality indicator (not exact score)
+- **Threshold Flag**: Boolean indicating if quality score >= 70
+- **Metrics Hash**: `keccak256` hash of full metrics (provable off-chain)
+- **Author Commitment**: `keccak256(authorWallet, storyId)` (not reversible)
+- **Attestation ID**: CRE report identifier
+
+### What's Off-Chain (Private)
+- **Exact Scores**: Significance, emotional depth, quality (0-100)
+- **Word Count**: Precise word count
+- **Themes**: Extracted themes (e.g., ["growth", "loss", "hope"])
+- **Author Address**: Stored in Supabase, visible only to author
+
+### Why This Matters
+- **Authors control disclosure**: Can choose to share exact scores or just show "Verified" badge
+- **No theme leakage**: Sensitive themes (e.g., trauma, mental health) stay private
+- **Provable integrity**: Anyone can verify metrics hash matches claimed data
+- **Marketplace trust**: Buyers can see quality tier without revealing author identity
+
+## Architecture
+
+### Dual-Write Pattern
+1. **On-Chain Write**: CRE workflow writes minimal proof to this contract via KeystoneForwarder
+2. **Off-Chain Write**: CRE workflow posts full metrics to `/api/cre/callback` (stored in Supabase)
+3. **Author-Filtered Reads**: `/api/cre/check` returns full metrics to author, proof-only to others
+
+```
+CRE Workflow → [On-Chain] PrivateVerifiedMetrics.sol (tier, threshold, hashes)
+            → [Off-Chain] /api/cre/callback → Supabase (full metrics, author-only)
+                                                    ↓
+                                          /api/cre/check (author-filtered)
+```
+
+## Constructor
+
+```solidity
+constructor(address _forwarderAddress)
+```
+
+<ParamField path="_forwarderAddress" type="address">
+  Address of the Chainlink KeystoneForwarder contract (Base Sepolia: `0x82300bd7c3958625581cc2f77bc6464dcecdf3e5`)
+</ParamField>
+
+## Structs
+
+<Accordion title="MinimalMetrics">
+  Stores minimal privacy-preserving proof for a story.
+
+  ```solidity
+  struct MinimalMetrics {
+      bool meetsQualityThreshold;  // qualityScore >= 70
+      uint8 qualityTier;           // 1-5 (ranges: 0-20, 21-40, 41-60, 61-80, 81-100)
+      bytes32 metricsHash;         // keccak256(abi.encode(all scores + themes + salt))
+      bytes32 authorCommitment;    // keccak256(abi.encodePacked(authorWallet, storyId))
+      bytes32 attestationId;
+      uint256 verifiedAt;          // Block timestamp
+      bool exists;                 // Whether metrics exist
+  }
+  ```
+
+  **Quality Tier Mapping:**
+  - Tier 1: Quality Score 0-20 (Poor)
+  - Tier 2: Quality Score 21-40 (Below Average)
+  - Tier 3: Quality Score 41-60 (Average)
+  - Tier 4: Quality Score 61-80 (Good)
+  - Tier 5: Quality Score 81-100 (Excellent)
+</Accordion>
+
+## State Variables
+
+<ParamField path="metrics" type="mapping(bytes32 => MinimalMetrics)">
+  Maps storyId (bytes32 keccak256 hash) to minimal metrics proof
+</ParamField>
+
+## Events
+
+<Accordion title="MetricsVerified">
+  Emitted when a story's metrics are verified and stored on-chain. **No raw address or scores are included.**
+
+  ```solidity
+  event MetricsVerified(
+      bytes32 indexed storyId,           // Story identifier
+      bytes32 indexed authorCommitment,  // Hash (not raw address)
+      uint8 qualityTier,                 // 1-5 (coarse-grained)
+      bool meetsQualityThreshold         // >= 70 threshold flag
+  );
+  ```
+
+  **Privacy Note:** This event does NOT reveal:
+  - Author's wallet address (only commitment hash)
+  - Exact quality score (only tier)
+  - Themes or word count
+</Accordion>
+
+## Functions
+
+<Accordion title="_processReport(bytes calldata report)">
+  Internal function called by `ReceiverTemplate.onReport()` to decode and store minimal CRE report data.
+
+  **Visibility:** `internal`
+
+  **Called By:** `onReport()` (from `ReceiverTemplate`), which is called by `KeystoneForwarder` after signature verification
+
+  **Parameters:**
+  - `report` (bytes) - ABI-encoded report data from privacy-preserving CRE workflow
+
+  **Report Encoding:**
+  ```solidity
+  abi.decode(
+      report,
+      (bytes32 storyId, bytes32 authorCommitment, bool meetsQualityThreshold,
+       uint8 qualityTier, bytes32 metricsHash, bytes32 attestationId)
+  )
+  ```
+
+  **Validation:**
+  - `qualityTier >= 1 && qualityTier <= 5`
+
+  **Implementation:**
+  ```solidity
+  function _processReport(bytes calldata report) internal override {
+      (
+          bytes32 storyId,
+          bytes32 authorCommitment,
+          bool meetsQualityThreshold,
+          uint8 qualityTier,
+          bytes32 metricsHash,
+          bytes32 attestationId
+      ) = abi.decode(
+          report,
+          (bytes32, bytes32, bool, uint8, bytes32, bytes32)
+      );
+
+      require(qualityTier >= 1 && qualityTier <= 5, "Quality tier out of range");
+
+      metrics[storyId] = MinimalMetrics({
+          meetsQualityThreshold: meetsQualityThreshold,
+          qualityTier: qualityTier,
+          metricsHash: metricsHash,
+          authorCommitment: authorCommitment,
+          attestationId: attestationId,
+          verifiedAt: block.timestamp,
+          exists: true
+      });
+
+      emit MetricsVerified(
+          storyId,
+          authorCommitment,
+          qualityTier,
+          meetsQualityThreshold
+      );
+  }
+  ```
+</Accordion>
+
+<Accordion title="getMetrics(bytes32 storyId)">
+  Get minimal verified metrics for a story.
+
+  **Access:** `public view`
+
+  **Parameters:**
+  - `storyId` (bytes32) - Story identifier (keccak256 hash)
+
+  **Returns:**
+  - `meetsQualityThreshold` (bool) - True if quality score >= 70
+  - `qualityTier` (uint8) - 1-5 quality tier
+  - `metricsHash` (bytes32) - Hash of full metrics
+  - `authorCommitment` (bytes32) - Hash of author + storyId
+  - `attestationId` (bytes32) - CRE report ID
+  - `verifiedAt` (uint256) - Block timestamp
+
+  **Requirements:**
+  - Metrics must exist for the story (reverts with "Not verified" otherwise)
+
+  ```solidity
+  function getMetrics(bytes32 storyId) external view returns (
+      bool meetsQualityThreshold,
+      uint8 qualityTier,
+      bytes32 metricsHash,
+      bytes32 authorCommitment,
+      bytes32 attestationId,
+      uint256 verifiedAt
+  ) {
+      require(metrics[storyId].exists, "Not verified");
+      MinimalMetrics storage m = metrics[storyId];
+      return (
+          m.meetsQualityThreshold,
+          m.qualityTier,
+          m.metricsHash,
+          m.authorCommitment,
+          m.attestationId,
+          m.verifiedAt
+      );
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  const storyId = ethers.keccak256(ethers.toUtf8Bytes('story-123'));
+  const metrics = await privateVerifiedMetrics.getMetrics(storyId);
+  
+  console.log('Quality Tier:', metrics.qualityTier); // 1-5
+  console.log('Meets Threshold:', metrics.meetsQualityThreshold);
+  ```
+</Accordion>
+
+<Accordion title="isVerified(bytes32 storyId)">
+  Check if a story has verified metrics.
+
+  **Access:** `public view`
+
+  **Parameters:**
+  - `storyId` (bytes32) - Story identifier
+
+  **Returns:**
+  - `bool` - `true` if metrics exist, `false` otherwise
+
+  ```solidity
+  function isVerified(bytes32 storyId) external view returns (bool) {
+      return metrics[storyId].exists;
+  }
+  ```
+</Accordion>
+
+<Accordion title="getAttestationId(bytes32 storyId)">
+  Get the CRE attestation ID for a verified story.
+
+  **Access:** `public view`
+
+  **Parameters:**
+  - `storyId` (bytes32) - Story identifier
+
+  **Returns:**
+  - `bytes32` - Attestation ID from CRE report
+
+  **Requirements:**
+  - Metrics must exist for the story
+
+  ```solidity
+  function getAttestationId(bytes32 storyId) external view returns (bytes32) {
+      require(metrics[storyId].exists, "Not verified");
+      return metrics[storyId].attestationId;
+  }
+  ```
+</Accordion>
+
+<Accordion title="verifyAuthor(bytes32 storyId, address author)">
+  Prove authorship by recomputing the commitment hash. Allows an author to prove ownership without revealing their address publicly.
+
+  **Access:** `public view`
+
+  **Parameters:**
+  - `storyId` (bytes32) - Story identifier
+  - `author` (address) - Claimed author address
+
+  **Returns:**
+  - `bool` - `true` if `keccak256(abi.encodePacked(author, storyId))` matches stored commitment
+
+  **Implementation:**
+  ```solidity
+  function verifyAuthor(bytes32 storyId, address author) external view returns (bool) {
+      if (!metrics[storyId].exists) return false;
+      bytes32 computed = keccak256(abi.encodePacked(author, storyId));
+      return computed == metrics[storyId].authorCommitment;
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  // Author proves ownership
+  const storyId = ethers.keccak256(ethers.toUtf8Bytes('story-123'));
+  const isAuthor = await privateVerifiedMetrics.verifyAuthor(storyId, userAddress);
+  
+  if (isAuthor) {
+    // Show full metrics to author
+  } else {
+    // Show minimal proof to others
+  }
+  ```
+</Accordion>
+
+<Accordion title="verifyMetricsHash(bytes32 storyId, bytes32 hash)">
+  Prove full metrics integrity by comparing the hash. Allows anyone to verify that claimed off-chain metrics match the on-chain hash.
+
+  **Access:** `public view`
+
+  **Parameters:**
+  - `storyId` (bytes32) - Story identifier
+  - `hash` (bytes32) - Claimed metrics hash (computed off-chain)
+
+  **Returns:**
+  - `bool` - `true` if hash matches stored metricsHash
+
+  **Implementation:**
+  ```solidity
+  function verifyMetricsHash(bytes32 storyId, bytes32 hash) external view returns (bool) {
+      if (!metrics[storyId].exists) return false;
+      return hash == metrics[storyId].metricsHash;
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  // Verify off-chain metrics match on-chain hash
+  const fullMetrics = { significanceScore: 85, emotionalDepth: 4, ... };
+  const computedHash = ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ['uint8', 'uint8', 'uint8', 'uint32', 'string[]', 'bytes32'],
+      [fullMetrics.significanceScore, fullMetrics.emotionalDepth, ...]
+    )
+  );
+  
+  const valid = await privateVerifiedMetrics.verifyMetricsHash(storyId, computedHash);
+  if (valid) {
+    console.log('Metrics verified!');
+  }
+  ```
+</Accordion>
+
+## CRE Integration Flow
+
+### 1. Trigger Privacy-Preserving CRE Workflow
+```typescript
+// POST /api/cre/trigger
+const response = await fetch('/api/cre/trigger', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    storyId: 'story-123',
+    text: 'My personal story text...',
+    authorAddress: '0xAuthorWallet...'
+  })
+});
+```
+
+### 2. CRE Workflow Execution (Privacy-Preserving)
+```typescript
+// cre/iStory_workflow/httpCallback.ts (simplified)
+async function processAnalysis(storyData, analysis) {
+  // 1. Compute quality tier (coarse-grained)
+  const qualityTier = Math.ceil(analysis.qualityScore / 20); // 1-5
+  const meetsThreshold = analysis.qualityScore >= 70;
+  
+  // 2. Compute author commitment (hide raw address)
+  const authorCommitment = ethers.keccak256(
+    ethers.solidityPacked(['address', 'bytes32'], [authorAddress, storyId])
+  );
+  
+  // 3. Compute metrics hash (provable integrity)
+  const metricsHash = ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ['uint8', 'uint8', 'uint8', 'uint32', 'string[]', 'bytes32'],
+      [
+        analysis.significanceScore,
+        analysis.emotionalDepth,
+        analysis.qualityScore,
+        analysis.wordCount,
+        analysis.themes,
+        attestationId
+      ]
+    )
+  );
+  
+  // 4. Encode minimal report for on-chain storage
+  const onChainReport = encodeAbiParameters([
+    { type: 'bytes32', name: 'storyId' },
+    { type: 'bytes32', name: 'authorCommitment' },
+    { type: 'bool', name: 'meetsQualityThreshold' },
+    { type: 'uint8', name: 'qualityTier' },
+    { type: 'bytes32', name: 'metricsHash' },
+    { type: 'bytes32', name: 'attestationId' }
+  ], [storyId, authorCommitment, meetsThreshold, qualityTier, metricsHash, attestationId]);
+  
+  // 5. Send minimal report to KeystoneForwarder (on-chain)
+  await sendReport(onChainReport);
+  
+  // 6. Send full metrics to backend (off-chain)
+  await fetch('https://estory.app/api/cre/callback', {
+    method: 'POST',
+    body: JSON.stringify({
+      storyId,
+      authorAddress, // Raw address (backend only)
+      significanceScore: analysis.significanceScore,
+      emotionalDepth: analysis.emotionalDepth,
+      qualityScore: analysis.qualityScore,
+      wordCount: analysis.wordCount,
+      themes: analysis.themes,
+      attestationId,
+      metricsHash // For integrity verification
+    })
+  });
+}
+```
+
+### 3. Author-Filtered Reads
+```typescript
+// GET /api/cre/check?storyId=story-123
+export async function GET(req: NextRequest) {
+  const authResult = await validateAuthOrReject(req);
+  if (isAuthError(authResult)) return authResult;
+  const userId = authResult;
+  
+  const storyId = req.nextUrl.searchParams.get('storyId');
+  
+  // 1. Get on-chain proof (public)
+  const storyIdHash = ethers.keccak256(ethers.toUtf8Bytes(storyId));
+  const onChainMetrics = await privateVerifiedMetrics.getMetrics(storyIdHash);
+  
+  // 2. Check if user is author
+  const { data: story } = await supabase
+    .from('stories')
+    .select('user_id')
+    .eq('id', storyId)
+    .single();
+  
+  const isAuthor = story?.user_id === userId;
+  
+  if (isAuthor) {
+    // 3. Return full metrics from Supabase (author only)
+    const { data: fullMetrics } = await supabase
+      .from('verified_metrics')
+      .select('*')
+      .eq('story_id', storyId)
+      .single();
+    
+    return NextResponse.json({
+      proof: onChainMetrics,
+      fullMetrics,
+      isAuthor: true
+    });
+  } else {
+    // 4. Return only on-chain proof (non-authors)
+    return NextResponse.json({
+      proof: onChainMetrics,
+      isAuthor: false
+    });
+  }
+}
+```
+
+## Privacy Guarantees
+
+### What Attackers CANNOT Learn
+1. **Author Identity**: Only commitment hash on-chain (not reversible without knowing both address and storyId)
+2. **Exact Scores**: Only tier (1-5) and threshold flag (>=70) on-chain
+3. **Themes**: Stored off-chain in Supabase, visible only to author
+4. **Word Count**: Not on-chain
+
+### What Attackers CAN Learn
+1. **Story Verified**: `isVerified(storyId)` returns true
+2. **Quality Tier**: 1-5 (coarse-grained)
+3. **Meets Threshold**: Boolean (quality >= 70)
+4. **Verification Time**: Block timestamp
+
+### Proof Verification
+Anyone can verify claimed metrics without revealing them:
+```typescript
+// Author shares metrics off-chain
+const claimedMetrics = { qualityScore: 85, themes: ['growth', 'hope'], ... };
+
+// Verifier computes hash
+const claimedHash = ethers.keccak256(
+  ethers.AbiCoder.defaultAbiCoder().encode([...], claimedMetrics)
+);
+
+// Check on-chain
+const valid = await privateVerifiedMetrics.verifyMetricsHash(storyId, claimedHash);
+// valid === true without revealing metrics to the blockchain
+```
+
+## Security Considerations
+
+### Author Commitment Security
+The commitment hash `keccak256(abi.encodePacked(author, storyId))` is not reversible because:
+- **High entropy**: Wallet addresses are 160-bit random values
+- **Salted with storyId**: Each commitment is unique to story
+- **Preimage resistance**: keccak256 is cryptographically secure
+
+Attackers cannot brute-force author addresses from commitment hashes.
+
+### Metrics Hash Integrity
+The metrics hash binds the full metrics to the on-chain proof:
+- **Tamper-proof**: Changing any field breaks the hash
+- **Provable**: Authors can prove metrics without on-chain storage
+- **Efficient**: Single bytes32 instead of full struct
+
+### ReceiverTemplate Interface
+Extends Chainlink's `ReceiverTemplate` to receive signed CRE reports:
+- **Signature verification**: KeystoneForwarder verifies DON signatures
+- **Replay protection**: Each report has unique attestationId
+- **Access control**: Only forwarder can call `onReport()`
+
+## Integration Examples
+
+### Frontend: Display Verified Badge with Conditional Details
+```typescript
+import { useVerifiedMetrics } from '@/app/hooks/useVerifiedMetrics';
+import { useAuth } from '@/components/AuthProvider';
+
+function StoryCard({ storyId, authorId }) {
+  const { user } = useAuth();
+  const { proof, fullMetrics, isAuthor } = useVerifiedMetrics(storyId);
+  const isOwnStory = user?.id === authorId;
+  
+  if (!proof) return null;
+  
+  return (
+    <div className="verified-badge">
+      ✓ Verified by Chainlink CRE
+      <p>Quality Tier: {proof.qualityTier}/5</p>
+      
+      {isOwnStory && fullMetrics && (
+        <div className="author-only">
+          <p>Exact Quality Score: {fullMetrics.qualityScore}/100</p>
+          <p>Themes: {fullMetrics.themes.join(', ')}</p>
+          <p>Word Count: {fullMetrics.wordCount}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+### Backend: Store Full Metrics (Off-Chain)
+```typescript
+// POST /api/cre/callback
+export async function POST(req: NextRequest) {
+  const body = await req.json();
+  
+  const { data, error } = await supabase
+    .from('verified_metrics')
+    .insert({
+      story_id: body.storyId,
+      author_address: body.authorAddress, // Raw address (private)
+      significance_score: body.significanceScore,
+      emotional_depth: body.emotionalDepth,
+      quality_score: body.qualityScore,
+      word_count: body.wordCount,
+      themes: body.themes,
+      attestation_id: body.attestationId,
+      metrics_hash: body.metricsHash,
+      verified_at: new Date().toISOString()
+    });
+  
+  if (error) throw error;
+  return NextResponse.json({ success: true });
+}
+```
+
+## Source Code
+
+View the full contract implementation:
+`/workspace/source/contracts/PrivateVerifiedMetrics.sol:1`
+
+```solidity
+contract PrivateVerifiedMetrics is ReceiverTemplate {
+
+    struct MinimalMetrics {
+        bool meetsQualityThreshold;  // qualityScore >= 70
+        uint8 qualityTier;           // 1-5
+        bytes32 metricsHash;         // keccak256(full metrics)
+        bytes32 authorCommitment;    // keccak256(author, storyId)
+        bytes32 attestationId;
+        uint256 verifiedAt;
+        bool exists;
+    }
+
+    mapping(bytes32 => MinimalMetrics) public metrics;
+
+    event MetricsVerified(
+        bytes32 indexed storyId,
+        bytes32 indexed authorCommitment,
+        uint8 qualityTier,
+        bool meetsQualityThreshold
+    );
+
+    constructor(address _forwarderAddress) ReceiverTemplate(_forwarderAddress) {}
+}
+```

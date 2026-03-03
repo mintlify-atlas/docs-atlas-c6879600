@@ -1,0 +1,400 @@
+---
+title: "StoryNFT (ERC721)"
+description: "Story book NFT collections with royalties and weekly winner rewards"
+---
+
+## Overview
+
+The **StoryNFT** contract enables users to mint NFTs representing story collections (books, anthologies) and awards weekly winner NFTs to top creators. Each NFT stores metadata on IPFS and supports ERC2981 royalties for secondary sales.
+
+**Contract Address (Base Sepolia):** `0x6D37ebc5...`
+
+## Features
+
+### Dual Minting System
+1. **Public Book Minting** - Any user can mint a book NFT for 0.001 ETH (prevents spam)
+2. **Weekly Winner Minting** - Admin-only free minting for contest winners
+
+### ERC721 Standard
+Full compliance with ERC721 NFT standard:
+- Unique token IDs (sequential, starting from 1)
+- Safe transfers with `_safeMint` (prevents accidental burns to contracts)
+- Enumeration via OpenZeppelin extensions
+
+### IPFS Metadata Storage
+Each NFT has a `tokenURI` pointing to IPFS metadata (cover art, title, description, story list).
+
+### ERC2981 Royalties
+- Default royalty: **5%** (500 basis points)
+- Applied to secondary sales on compatible marketplaces (OpenSea, Rarible, etc.)
+- Royalty receiver can be updated by admin
+
+### Access Control
+- **DEFAULT_ADMIN_ROLE**: Can update mint fee, set royalties, withdraw fees
+- **MINTER_ROLE**: Can mint weekly winner NFTs for free
+
+## Constructor
+
+```solidity
+constructor(address defaultAdmin)
+```
+
+<ParamField path="defaultAdmin" type="address">
+  Receives DEFAULT_ADMIN_ROLE and MINTER_ROLE, and is set as the default royalty receiver (5%)
+</ParamField>
+
+## State Variables
+
+<ParamField path="mintFee" type="uint256">
+  Cost to mint a book NFT (default: 0.001 ether)
+</ParamField>
+
+<ParamField path="_nextTokenId" type="uint256">
+  Internal counter for sequential token IDs (starts at 0, first mint is ID 1)
+</ParamField>
+
+<ParamField path="MINTER_ROLE" type="bytes32">
+  Role identifier for addresses that can mint weekly winner NFTs
+</ParamField>
+
+## Events
+
+<Accordion title="NFTMinted">
+  Emitted when any NFT is minted (book or weekly winner).
+
+  ```solidity
+  event NFTMinted(
+      uint256 indexed tokenId,    // ID of the minted NFT
+      address indexed recipient,  // Address receiving the NFT
+      string uri,                 // IPFS metadata URI
+      string collectionType       // "BOOK" or "WEEKLY_WINNER"
+  );
+  ```
+
+  **Usage:** Backend can index this event to track NFT mints and display in user galleries.
+</Accordion>
+
+## Functions
+
+<Accordion title="mintWeeklyWinner(address winner, string memory uri)">
+  Mint a free NFT to a weekly contest winner. Only callable by MINTER_ROLE holders.
+
+  **Access:** `onlyRole(MINTER_ROLE)`
+
+  **Parameters:**
+  - `winner` (address) - Recipient wallet address
+  - `uri` (string) - IPFS URI for NFT metadata (e.g., `ipfs://QmXxx...`)
+
+  **Implementation:**
+  ```solidity
+  function mintWeeklyWinner(address winner, string memory uri) 
+      external 
+      onlyRole(MINTER_ROLE) 
+  {
+      uint256 tokenId = ++_nextTokenId;
+      _safeMint(winner, tokenId);
+      _setTokenURI(tokenId, uri);
+      emit NFTMinted(tokenId, winner, uri, "WEEKLY_WINNER");
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  // Backend awards weekly winner
+  const metadataURI = 'ipfs://QmWeeklyWinnerMetadata123';
+  await storyNFT.mintWeeklyWinner(winnerAddress, metadataURI);
+  ```
+</Accordion>
+
+<Accordion title="mintBook(string memory uri)">
+  Mint a book NFT. Requires payment of `mintFee` (0.001 ETH by default).
+
+  **Access:** `public`, `payable`
+
+  **Parameters:**
+  - `uri` (string) - IPFS URI for book metadata
+
+  **Requirements:**
+  - `msg.value >= mintFee`
+
+  **Implementation:**
+  ```solidity
+  function mintBook(string memory uri) external payable {
+      require(msg.value >= mintFee, "Insufficient mint fee");
+      uint256 tokenId = ++_nextTokenId;
+      _safeMint(msg.sender, tokenId);
+      _setTokenURI(tokenId, uri);
+      emit NFTMinted(tokenId, msg.sender, uri, "BOOK");
+  }
+  ```
+
+  **Usage Example:**
+  ```typescript
+  import { useStoryNFT } from '@/app/hooks/useStoryNFT';
+  import { ethers } from 'ethers';
+
+  function MintBookButton({ metadataURI }) {
+    const { mintBook } = useStoryNFT();
+    
+    const handleMint = async () => {
+      const fee = ethers.parseEther("0.001"); // 0.001 ETH
+      await mintBook(metadataURI, { value: fee });
+    };
+    
+    return <button onClick={handleMint}>Mint Book NFT</button>;
+  }
+  ```
+</Accordion>
+
+<Accordion title="setMintFee(uint256 _fee)">
+  Update the mint fee for book NFTs. Only callable by DEFAULT_ADMIN_ROLE.
+
+  **Access:** `onlyRole(DEFAULT_ADMIN_ROLE)`
+
+  **Parameters:**
+  - `_fee` (uint256) - New mint fee in wei (e.g., 0.002 ether)
+
+  ```solidity
+  function setMintFee(uint256 _fee) external onlyRole(DEFAULT_ADMIN_ROLE) {
+      mintFee = _fee;
+  }
+  ```
+</Accordion>
+
+<Accordion title="withdraw()">
+  Withdraw accumulated mint fees to the admin address. Only callable by DEFAULT_ADMIN_ROLE.
+
+  **Access:** `onlyRole(DEFAULT_ADMIN_ROLE)`
+
+  **Requirements:**
+  - Contract balance > 0
+
+  **Implementation:**
+  ```solidity
+  function withdraw() external onlyRole(DEFAULT_ADMIN_ROLE) {
+      uint256 balance = address(this).balance;
+      require(balance > 0, "No balance to withdraw");
+      (bool success, ) = payable(msg.sender).call{value: balance}("");
+      require(success, "Withdrawal failed");
+  }
+  ```
+</Accordion>
+
+<Accordion title="setDefaultRoyalty(address receiver, uint96 feeNumerator)">
+  Update the default royalty settings for all NFTs. Only callable by DEFAULT_ADMIN_ROLE.
+
+  **Access:** `onlyRole(DEFAULT_ADMIN_ROLE)`
+
+  **Parameters:**
+  - `receiver` (address) - Address to receive royalty payments
+  - `feeNumerator` (uint96) - Royalty percentage in basis points (500 = 5%, 1000 = 10%)
+
+  **Implementation:**
+  ```solidity
+  function setDefaultRoyalty(address receiver, uint96 feeNumerator) 
+      external 
+      onlyRole(DEFAULT_ADMIN_ROLE) 
+  {
+      _setDefaultRoyalty(receiver, feeNumerator);
+  }
+  ```
+
+  **Example:**
+  ```typescript
+  // Set royalty to 7.5% (750 basis points)
+  await storyNFT.setDefaultRoyalty(treasuryAddress, 750);
+  ```
+</Accordion>
+
+## Metadata Structure
+
+IPFS metadata should follow the ERC721 metadata standard:
+
+```json
+{
+  "name": "My Story Collection",
+  "description": "A collection of personal narratives from 2025-2026",
+  "image": "ipfs://QmCoverArtHash123",
+  "attributes": [
+    { "trait_type": "Story Count", "value": 52 },
+    { "trait_type": "Year", "value": "2026" },
+    { "trait_type": "Theme", "value": "Personal Growth" }
+  ],
+  "external_url": "https://estory.app/books/123"
+}
+```
+
+## Royalty Mechanics
+
+### How ERC2981 Works
+1. User lists NFT on marketplace (e.g., OpenSea)
+2. Buyer purchases NFT for 1 ETH
+3. Marketplace calls `royaltyInfo(tokenId, salePrice)` on contract
+4. Contract returns `(receiver, royaltyAmount)` (e.g., treasury address, 0.05 ETH for 5%)
+5. Marketplace sends 0.05 ETH to receiver, 0.95 ETH to seller
+
+### Default Royalty
+Set at deployment to 5% (500 basis points) with `defaultAdmin` as receiver:
+```solidity
+_setDefaultRoyalty(defaultAdmin, 500);
+```
+
+### Marketplace Compatibility
+Supported by:
+- OpenSea (automatic royalty enforcement)
+- Rarible
+- LooksRare
+- Foundation
+- Any marketplace implementing ERC2981
+
+## Minting Workflows
+
+### Public Book Minting Flow
+1. User compiles story collection in eStory app
+2. Frontend uploads metadata to IPFS via Pinata:
+   ```typescript
+   const metadata = {
+     name: bookTitle,
+     description: bookDescription,
+     image: coverImageIPFS,
+     attributes: [/* traits */]
+   };
+   const { IpfsHash } = await pinata.pinJSON(metadata);
+   const uri = `ipfs://${IpfsHash}`;
+   ```
+3. User calls `mintBook(uri)` with 0.001 ETH
+4. NFT is minted and appears in user's wallet
+5. Backend indexes `NFTMinted` event and displays in user's profile
+
+### Weekly Winner Minting Flow
+1. Backend runs weekly contest query (most likes, highest engagement, etc.)
+2. Winner is selected
+3. Backend generates special winner metadata and uploads to IPFS
+4. Admin wallet calls `mintWeeklyWinner(winnerAddress, uri)`
+5. Winner receives NFT for free
+6. Winner is notified via email/notification
+
+## Security Considerations
+
+### Mint Fee Protection
+The 0.001 ETH mint fee prevents spam minting attacks. Without a fee, an attacker could mint millions of NFTs to bloat storage.
+
+### Safe Minting
+Uses `_safeMint` instead of `_mint` to prevent accidental transfers to contracts that don't support ERC721:
+```solidity
+_safeMint(winner, tokenId); // Calls onERC721Received if recipient is a contract
+```
+
+### Withdrawal Safety
+Uses low-level `call` instead of `transfer` to avoid gas limit issues:
+```solidity
+(bool success, ) = payable(msg.sender).call{value: balance}("");
+require(success, "Withdrawal failed");
+```
+
+### Royalty Bounds
+ERC2981 allows royalties up to 10,000 basis points (100%). The admin should never set royalties above 10% to avoid marketplace rejection.
+
+## Integration Examples
+
+### Frontend: Mint Book NFT
+```typescript
+import { useStoryNFT } from '@/app/hooks/useStoryNFT';
+import { uploadMetadataToIPFS } from '@/lib/ipfs';
+import { ethers } from 'ethers';
+
+function MintBookFlow({ bookData }) {
+  const { mintBook } = useStoryNFT();
+  const [loading, setLoading] = useState(false);
+  
+  const handleMint = async () => {
+    setLoading(true);
+    try {
+      // 1. Upload metadata to IPFS
+      const metadataURI = await uploadMetadataToIPFS({
+        name: bookData.title,
+        description: bookData.description,
+        image: bookData.coverImageIPFS,
+        attributes: bookData.attributes
+      });
+      
+      // 2. Mint NFT
+      const mintFee = ethers.parseEther("0.001");
+      const tx = await mintBook(metadataURI, { value: mintFee });
+      await tx.wait();
+      
+      toast.success('Book NFT minted!');
+    } catch (error) {
+      console.error('Mint failed:', error);
+      toast.error('Failed to mint NFT');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  return (
+    <button onClick={handleMint} disabled={loading}>
+      {loading ? 'Minting...' : 'Mint Book NFT (0.001 ETH)'}
+    </button>
+  );
+}
+```
+
+### Backend: Award Weekly Winner
+```typescript
+import { ethers } from 'ethers';
+import { STORY_NFT_ADDRESS, STORY_NFT_ABI } from '@/lib/contracts';
+import { uploadMetadataToIPFS } from '@/lib/ipfs';
+
+const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC);
+const signer = new ethers.Wallet(process.env.MINTER_PRIVATE_KEY, provider);
+const nft = new ethers.Contract(STORY_NFT_ADDRESS, STORY_NFT_ABI, signer);
+
+async function awardWeeklyWinner(winnerAddress: string, weekNumber: number) {
+  // 1. Generate winner metadata
+  const metadata = {
+    name: `eStory Weekly Winner - Week ${weekNumber}`,
+    description: `Top creator of week ${weekNumber} on eStory`,
+    image: 'ipfs://QmWinnerBadgeImage',
+    attributes: [
+      { trait_type: 'Week', value: weekNumber },
+      { trait_type: 'Award', value: 'Weekly Winner' },
+      { trait_type: 'Year', value: '2026' }
+    ]
+  };
+  
+  // 2. Upload to IPFS
+  const uri = await uploadMetadataToIPFS(metadata);
+  
+  // 3. Mint NFT
+  const tx = await nft.mintWeeklyWinner(winnerAddress, uri);
+  await tx.wait();
+  
+  console.log(`Awarded weekly winner NFT to ${winnerAddress}`);
+  return tx.hash;
+}
+```
+
+## Source Code
+
+View the full contract implementation:
+`/workspace/source/contracts/StoryNFT.sol:1`
+
+```solidity
+contract StoryNFT is ERC721URIStorage, AccessControl, ERC2981 {
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    uint256 private _nextTokenId;
+
+    uint256 public mintFee = 0.001 ether; // Small fee to prevent spam
+
+    event NFTMinted(uint256 indexed tokenId, address indexed recipient, string uri, string collectionType);
+
+    constructor(address defaultAdmin) ERC721("EStory Collections", "ESTORY") {
+        _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
+        _grantRole(MINTER_ROLE, defaultAdmin);
+
+        // Set default royalty to 5% (500 basis points)
+        _setDefaultRoyalty(defaultAdmin, 500);
+    }
+}
+```

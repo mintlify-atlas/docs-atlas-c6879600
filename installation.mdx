@@ -1,0 +1,545 @@
+---
+title: Developer Installation Guide
+description: Clone the repo, configure environment variables, and deploy smart contracts
+---
+
+# Developer Installation
+
+This guide walks you through setting up eStory locally for development, including environment configuration, database setup, and smart contract deployment to Base Sepolia.
+
+<Note>
+  **Prerequisites**: Node.js 18+, npm/yarn/pnpm, Supabase account, MetaMask wallet with Base Sepolia testnet ETH, and API keys for AI services.
+</Note>
+
+## Prerequisites
+
+### Required Software
+
+- **Node.js 18+** (eStory uses Next.js 15.5.9 with React 19)
+- **npm, yarn, or pnpm** (package manager)
+- **Git** for cloning the repository
+
+### Required Accounts & API Keys
+
+| Service | Purpose | Get API Key |
+|---------|---------|-------------|
+| **Supabase** | PostgreSQL database + auth + storage | [supabase.com/dashboard](https://supabase.com/dashboard/project/[your-project]/settings/api) |
+| **WalletConnect** | RainbowKit wallet connection | [cloud.walletconnect.com](https://cloud.walletconnect.com/) |
+| **Google Gemini** | AI text enhancement + story analysis | [makersuite.google.com/app/apikey](https://makersuite.google.com/app/apikey) |
+| **ElevenLabs** | Speech-to-text transcription | [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys) |
+| **Pinata** | IPFS storage for NFT metadata | [app.pinata.cloud/developers/api-keys](https://app.pinata.cloud/developers/api-keys) |
+| **Resend** | Transactional emails | [resend.com/api-keys](https://resend.com/api-keys) |
+| **Basescan** | Contract verification (optional) | [basescan.org/myapikey](https://basescan.org/myapikey) |
+
+### Base Sepolia Testnet Setup
+
+1. Add Base Sepolia to MetaMask:
+   - **Network Name**: Base Sepolia
+   - **RPC URL**: `https://sepolia.base.org`
+   - **Chain ID**: `84532`
+   - **Currency Symbol**: `ETH`
+   - **Block Explorer**: `https://sepolia.basescan.org`
+
+2. Get testnet ETH from [Base Sepolia Faucet](https://www.coinbase.com/faucets/base-ethereum-goerli-faucet)
+
+## Installation Steps
+
+### 1. Clone the Repository
+
+<CodeGroup>
+
+```bash SSH
+git clone git@github.com:yourusername/estory.git
+cd estory
+```
+
+```bash HTTPS
+git clone https://github.com/yourusername/estory.git
+cd estory
+```
+
+</CodeGroup>
+
+### 2. Install Dependencies
+
+Choose your preferred package manager:
+
+<CodeGroup>
+
+```bash npm
+npm install
+```
+
+```bash yarn
+yarn install
+```
+
+```bash pnpm
+pnpm install
+```
+
+</CodeGroup>
+
+**Key Dependencies** (from `package.json`):
+
+- **Next.js 15.5.9** - React framework with App Router
+- **Wagmi 2.17.5 + Viem 2.38.0** - Web3 interactions
+- **@rainbow-me/rainbowkit 2.2.8** - Wallet connection UI
+- **@supabase/supabase-js 2.76.1** - Database client
+- **@google/generative-ai 0.24.1** - Gemini AI SDK
+- **@elevenlabs/elevenlabs-js 2.24.1** - Speech-to-text API
+- **dexie 4.3.0** - IndexedDB wrapper for local vault
+- **framer-motion 12.23.22** - Animations
+- **tailwindcss 4** - Styling
+- **vitest 4.0.15** - Unit testing
+- **@playwright/test 1.57.0** - E2E testing
+- **hardhat 2.27.1** - Solidity development
+
+### 3. Environment Variables Setup
+
+Create a `.env.local` file in the project root. Use `.env.example` as a template:
+
+```bash
+cp .env.example .env.local
+```
+
+Now populate `.env.local` with your values:
+
+<CodeGroup>
+
+```bash Supabase Configuration
+# Get from: https://supabase.com/dashboard/project/[your-project]/settings/api
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+```
+
+```bash WalletConnect / RainbowKit
+# Get from: https://cloud.walletconnect.com/
+NEXT_PUBLIC_PROJECT_ID=your-walletconnect-project-id
+```
+
+```bash AI Services
+# Google Gemini API Key (text enhancement + analysis)
+# Get from: https://makersuite.google.com/app/apikey
+GOOGLE_GENERATIVE_AI_API_KEY=your-google-ai-api-key
+
+# ElevenLabs API Key (speech-to-text transcription)
+# Get from: https://elevenlabs.io/app/settings/api-keys
+ELEVENLABS_API_KEY=your-elevenlabs-api-key
+```
+
+```bash IPFS / Pinata
+# Get from: https://app.pinata.cloud/developers/api-keys
+PINATA_JWT=your-pinata-jwt-token
+NEXT_PUBLIC_IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs/
+```
+
+```bash Smart Contract Addresses
+# These are populated AFTER deploying contracts (Step 5)
+NEXT_PUBLIC_ESTORY_TOKEN_ADDRESS=0x...
+NEXT_PUBLIC_STORY_PROTOCOL_ADDRESS=0x...
+NEXT_PUBLIC_STORY_NFT_ADDRESS=0x...
+NEXT_PUBLIC_INITIAL_ADMIN_ADDRESS=0x...
+NEXT_PUBLIC_VERIFIED_METRICS_ADDRESS=0x...
+
+# Legacy CRE contract (backward compatibility)
+NEXT_PUBLIC_LEGACY_VERIFIED_METRICS_ADDRESS=0x052B52A4841080a98876275d5f8E6d094c9E086C
+```
+
+```bash Blockchain / Hardhat Deployment
+# Private key for deploying contracts (WITHOUT 0x prefix)
+# WARNING: Never share or commit this key!
+ADMIN_WALLET_PRIVATE_KEY=your-wallet-private-key
+
+# Basescan API key for contract verification
+# Get from: https://basescan.org/myapikey
+BASESCAN_API_KEY=your-basescan-api-key
+
+# Admin private key for cron jobs (token distribution)
+ADMIN_PRIVATE_KEY=your-admin-private-key
+```
+
+```bash Email & Security
+# Resend API key for transactional emails
+# Get from: https://resend.com/api-keys
+RESEND_API_KEY=your-resend-api-key
+
+# Secret for authenticating cron job requests
+CRON_SECRET=your-random-secret-string
+
+# Chainlink CRE (optional, for verifiable metrics)
+CRE_CALLBACK_SECRET=your-cre-callback-secret
+CRE_WORKFLOW_URL=
+CRE_API_KEY=
+```
+
+</CodeGroup>
+
+<Warning>
+  **Security**: Never commit `.env.local` to version control! The `.gitignore` file already excludes it, but double-check before pushing.
+</Warning>
+
+### 4. Set Up Supabase Database
+
+#### Create Supabase Project
+
+1. Go to [supabase.com/dashboard](https://supabase.com/dashboard)
+2. Click **"New Project"**
+3. Choose organization, name, database password, and region
+4. Wait for project provisioning (~2 minutes)
+
+#### Run Database Migrations
+
+Run the migrations in `supabase/migrations/` to create tables:
+
+```bash
+cd supabase/migrations
+```
+
+Key migrations to apply (in order):
+
+1. **`001_create_weekly_reflections.sql`** - Weekly AI-generated summaries
+2. **`002_enable_rls_policies.sql`** - Row Level Security for data privacy
+3. **`003_add_oauth_fields.sql`** - OAuth account linking fields
+4. **`004_create_habits_tables.sql`** - Habit tracking
+5. **`005_create_waitlist_table.sql`** - Waitlist management
+6. **`006_create_verified_metrics_tables.sql`** - CRE verification tables
+
+Apply via Supabase SQL Editor or Supabase CLI:
+
+<CodeGroup>
+
+```bash Supabase CLI
+# Install Supabase CLI
+npm install -g supabase
+
+# Link to your project
+supabase link --project-ref YOUR_PROJECT_REF
+
+# Push migrations
+supabase db push
+```
+
+```bash Manual (SQL Editor)
+# Copy-paste each migration file into Supabase SQL Editor
+# Run them in order (001 → 002 → 003 → ...)
+```
+
+</CodeGroup>
+
+#### Create Storage Bucket
+
+1. Go to **Storage** in Supabase dashboard
+2. Click **"New bucket"**
+3. Name: `story-audio`
+4. Set **Public bucket** to `true` (audio files need public URLs)
+5. Click **"Create bucket"**
+
+#### Enable Authentication Providers
+
+1. Go to **Authentication > Providers**
+2. Enable **Email** (for wallet auth)
+3. Enable **Google OAuth**:
+   - Add Google Client ID and Secret from [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   - Set redirect URL to `https://YOUR_PROJECT.supabase.co/auth/v1/callback`
+
+### 5. Deploy Smart Contracts
+
+eStory uses three Solidity contracts deployed on Base Sepolia:
+
+1. **eStoryToken** (ERC20) - $STORY token with 100M max supply
+2. **StoryProtocol** - Tips and paywall payments
+3. **StoryNFT** (ERC721) - Story book NFTs with 0.001 ETH mint fee
+
+#### Compile Contracts
+
+```bash
+npx hardhat compile
+```
+
+This generates ABIs in `artifacts/contracts/`.
+
+#### Deploy to Base Sepolia
+
+<CodeGroup>
+
+```bash Deploy Script
+# Deploy all contracts (from scripts/deploy.ts)
+npx hardhat run scripts/deploy.ts --network baseSepolia
+```
+
+```typescript Deploy Script Code
+// scripts/deploy.ts (from source)
+import { ethers } from "hardhat";
+
+async function main() {
+  const [deployer] = await ethers.getSigners();
+  console.log("Deploying with:", deployer.address);
+
+  // 1. Deploy EStoryToken
+  const EStoryToken = await ethers.getContractFactory("EStoryToken");
+  const token = await EStoryToken.deploy(deployer.address);
+  await token.waitForDeployment();
+  const tokenAddress = await token.getAddress();
+  console.log(`EStoryToken deployed: ${tokenAddress}`);
+
+  // 2. Deploy StoryProtocol
+  const StoryProtocol = await ethers.getContractFactory("StoryProtocol");
+  const protocol = await StoryProtocol.deploy(tokenAddress, deployer.address);
+  await protocol.waitForDeployment();
+  const protocolAddress = await protocol.getAddress();
+  console.log(`StoryProtocol deployed: ${protocolAddress}`);
+
+  // 3. Deploy StoryNFT
+  const StoryNFT = await ethers.getContractFactory("StoryNFT");
+  const nft = await StoryNFT.deploy(deployer.address);
+  await nft.waitForDeployment();
+  const nftAddress = await nft.getAddress();
+  console.log(`StoryNFT deployed: ${nftAddress}`);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+```
+
+</CodeGroup>
+
+**Expected Output**:
+
+```
+Deploying contracts with the account: 0xYourAddress
+EStoryToken deployed to: 0xf9eDD76B55F58Bf4E8Ae2A90a1D6d8d44dfA74BC
+StoryProtocol deployed to: 0xA51a4cA00cC4C81A5F7cB916D0BFa1a4aD6f4a71
+StoryNFT deployed to: 0x6D37ebc5eAEF37ecC888689f295D114187933342
+
+--- SAVE THESE ADDRESSES ---
+Go to 'lib/contracts.ts' and update the addresses now.
+```
+
+#### Update Contract Addresses
+
+Edit `lib/contracts.ts` with your deployed addresses:
+
+```typescript
+// lib/contracts.ts
+export const STORY_TOKEN_ADDRESS = "0xYourTokenAddress";
+export const STORY_PROTOCOL_ADDRESS = "0xYourProtocolAddress";
+export const STORY_NFT_ADDRESS = "0xYourNFTAddress";
+```
+
+Also update `.env.local`:
+
+```bash
+NEXT_PUBLIC_ESTORY_TOKEN_ADDRESS=0xYourTokenAddress
+NEXT_PUBLIC_STORY_PROTOCOL_ADDRESS=0xYourProtocolAddress
+NEXT_PUBLIC_STORY_NFT_ADDRESS=0xYourNFTAddress
+```
+
+#### Verify Contracts on Basescan (Optional)
+
+```bash
+npx hardhat run scripts/verify.ts --network baseSepolia
+```
+
+This makes your contract source code public on [sepolia.basescan.org](https://sepolia.basescan.org).
+
+### 6. Run Development Server
+
+Start the Next.js dev server:
+
+<CodeGroup>
+
+```bash npm
+npm run dev
+```
+
+```bash yarn
+yarn dev
+```
+
+```bash pnpm
+pnpm dev
+```
+
+</CodeGroup>
+
+**Output**:
+
+```
+  ▲ Next.js 15.5.9
+  - Local:        http://localhost:3000
+  - Network:      http://192.168.1.100:3000
+
+ ✓ Ready in 3.2s
+```
+
+Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+<Note>
+  **Port Conflict?** If port 3000 is in use, change the port in `package.json`:
+  ```json
+  "scripts": {
+    "dev": "next dev -p 3001"
+  }
+  ```
+</Note>
+
+## Project Structure
+
+```
+estory/
+├── app/
+│   ├── api/                    # API routes (all require auth)
+│   │   ├── ai/                 # Transcribe, enhance, analyze
+│   │   ├── auth/               # Login, nonce, OAuth, linking
+│   │   ├── cre/                # Chainlink CRE verification
+│   │   ├── journal/            # Save stories
+│   │   ├── social/             # Like, follow
+│   │   └── user/               # Profile
+│   ├── hooks/                  # React hooks (useVault, useVerifiedMetrics, etc.)
+│   ├── record/                 # Recording page
+│   │   ├── page.tsx            # Server component (metadata)
+│   │   └── RecordPageClient.tsx # Client component (UI)
+│   ├── library/                # Story library
+│   ├── social/                 # Social feed
+│   └── profile/                # User profile
+├── components/
+│   ├── ui/                     # shadcn/ui components
+│   ├── vault/                  # Vault encryption UI
+│   ├── AuthProvider.tsx        # Auth context
+│   ├── Provider.tsx            # Web3 + Theme providers
+│   └── Navigation.tsx          # Top nav
+├── contracts/                  # Solidity smart contracts
+├── lib/
+│   ├── auth.ts                 # Auth middleware (validateAuthOrReject)
+│   ├── contracts.ts            # Contract addresses + ABIs
+│   ├── vault/                  # Local encryption (crypto.ts, db.ts, keyManager.ts)
+│   └── wagmi.config.ts         # Wagmi configuration
+├── scripts/
+│   ├── deploy.ts               # Deploy contracts
+│   └── verify.ts               # Verify on Basescan
+├── supabase/
+│   └── migrations/             # SQL migrations
+├── __tests__/                  # Vitest unit tests
+├── e2e/                        # Playwright E2E tests
+├── middleware.ts               # API rate limiting
+├── next.config.mjs             # Next.js config + security headers
+├── hardhat.config.ts           # Hardhat config
+└── .env.local                  # Environment variables (DO NOT COMMIT)
+```
+
+## Development Commands
+
+### Web Development
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start Next.js dev server on localhost:3000 |
+| `npm run build` | Production build (what Vercel runs) |
+| `npm run start` | Start production server |
+| `npm run lint` | Run ESLint |
+
+### Testing
+
+| Command | Description |
+|---------|-------------|
+| `npx vitest` | Run unit tests (watch mode) |
+| `npx vitest run` | Run unit tests once |
+| `npx vitest run --coverage` | Run tests with coverage report |
+| `npx playwright test` | Run E2E tests |
+| `npx playwright test --ui` | Run E2E tests in interactive UI |
+
+### Smart Contracts
+
+| Command | Description |
+|---------|-------------|
+| `npx hardhat compile` | Compile Solidity contracts |
+| `npx hardhat run scripts/deploy.ts --network baseSepolia` | Deploy to Base Sepolia |
+| `npx hardhat run scripts/verify.ts --network baseSepolia` | Verify on Basescan |
+
+## Troubleshooting
+
+### Build Errors
+
+**Issue**: `Cannot find module '@/lib/contracts'`
+
+**Solution**: Ensure `tsconfig.json` has path alias:
+
+```json
+{
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./*"]
+    }
+  }
+}
+```
+
+### Supabase Connection Errors
+
+**Issue**: `Invalid API key` or `Project not found`
+
+**Solution**: 
+1. Verify `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `.env.local`
+2. Check Supabase dashboard → Settings → API
+3. Restart dev server after changing env vars
+
+### Web3 Connection Issues
+
+**Issue**: `Unsupported chain` or `Chain mismatch`
+
+**Solution**:
+1. Check `lib/wagmi.config.ts` includes Base Sepolia:
+   ```typescript
+   import { baseSepolia } from 'wagmi/chains';
+   export const chains = [baseSepolia];
+   ```
+2. Switch MetaMask to Base Sepolia (Chain ID: 84532)
+
+### Contract Deployment Fails
+
+**Issue**: `Insufficient funds` or `Nonce too high`
+
+**Solution**:
+1. Ensure wallet has Base Sepolia testnet ETH (get from faucet)
+2. Check `hardhat.config.ts` has correct RPC:
+   ```typescript
+   networks: {
+     baseSepolia: {
+       url: "https://sepolia.base.org",
+       accounts: [process.env.ADMIN_WALLET_PRIVATE_KEY!]
+     }
+   }
+   ```
+3. If nonce error, reset account in MetaMask
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+    Record your first story with AI transcription
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api-reference">
+    Explore all API endpoints for building features
+  </Card>
+  
+  <Card title="Smart Contracts" icon="file-contract" href="/contracts">
+    Deep dive into eStory's Solidity contracts
+  </Card>
+  
+  <Card title="Local Vault" icon="lock" href="/vault">
+    Set up client-side encryption for private stories
+  </Card>
+</CardGroup>
+
+---
+
+<Warning>
+  **Production Deployment**: For Vercel deployment, add all `.env.local` variables to Vercel environment variables. Never deploy with testnet keys in production!
+</Warning>
+
+**Need Help?** Join our [Discord community](https://discord.gg/estory) or email [support@estory.app](mailto:support@estory.app)
