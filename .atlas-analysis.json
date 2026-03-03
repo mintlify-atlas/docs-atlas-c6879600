@@ -1,0 +1,225 @@
+{
+  "projectType": "saas",
+  "projectName": "eStory",
+  "projectDescription": "AI-powered Web3 voice journaling dApp with blockchain permanence, cognitive insights, and creator monetization on Base L2",
+  "theme": "palm",
+  "primaryColor": "#9333ea",
+  "lightColor": "#a855f7",
+  "darkColor": "#7e22ce",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/voice-journaling",
+              "features/ai-analysis",
+              "features/blockchain-storage",
+              "features/local-vault",
+              "features/social-monetization"
+            ]
+          },
+          {
+            "group": "Authentication",
+            "pages": [
+              "auth/overview",
+              "auth/wallet-auth",
+              "auth/oauth",
+              "auth/account-linking"
+            ]
+          },
+          {
+            "group": "User Guides",
+            "pages": [
+              "guides/recording-stories",
+              "guides/library-management",
+              "guides/vault-setup",
+              "guides/nft-minting",
+              "guides/earning-tokens"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/chainlink-cre",
+              "integrations/elevenlabs",
+              "integrations/gemini-ai",
+              "integrations/supabase",
+              "integrations/ipfs-pinata"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/introduction",
+              "api/authentication",
+              "api/rate-limits",
+              "api/error-handling"
+            ]
+          },
+          {
+            "group": "AI Endpoints",
+            "pages": [
+              "api/ai/transcribe",
+              "api/ai/enhance",
+              "api/ai/analyze",
+              "api/ai/reflection"
+            ]
+          },
+          {
+            "group": "Auth Endpoints",
+            "pages": [
+              "api/auth/nonce",
+              "api/auth/login",
+              "api/auth/callback",
+              "api/auth/onboarding",
+              "api/auth/link-account"
+            ]
+          },
+          {
+            "group": "Story Endpoints",
+            "pages": [
+              "api/stories/save",
+              "api/stories/metadata",
+              "api/stories/feed"
+            ]
+          },
+          {
+            "group": "Social Endpoints",
+            "pages": [
+              "api/social/like",
+              "api/social/follow",
+              "api/social/tip",
+              "api/social/paywall"
+            ]
+          },
+          {
+            "group": "CRE Endpoints",
+            "pages": [
+              "api/cre/trigger",
+              "api/cre/check",
+              "api/cre/callback"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Smart Contracts",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "contracts/introduction",
+              "contracts/deployment"
+            ]
+          },
+          {
+            "group": "Contracts",
+            "pages": [
+              "contracts/istory-token",
+              "contracts/story-protocol",
+              "contracts/story-nft",
+              "contracts/verified-metrics",
+              "contracts/private-verified-metrics"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "contracts/local-setup",
+              "contracts/testing",
+              "contracts/verification"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "System Design",
+            "pages": [
+              "architecture/overview",
+              "architecture/tech-stack",
+              "architecture/security",
+              "architecture/database-schema"
+            ]
+          },
+          {
+            "group": "Frontend",
+            "pages": [
+              "architecture/components",
+              "architecture/hooks",
+              "architecture/routing"
+            ]
+          },
+          {
+            "group": "Backend",
+            "pages": [
+              "architecture/api-routes",
+              "architecture/middleware",
+              "architecture/services"
+            ]
+          },
+          {
+            "group": "Local Vault",
+            "pages": [
+              "architecture/vault/encryption",
+              "architecture/vault/key-management",
+              "architecture/vault/storage"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Voice-to-text journaling with ElevenLabs Scribe transcription",
+    "AI-powered story analysis and cognitive insights via Google Gemini",
+    "Client-side encrypted local vault with AES-256-GCM encryption",
+    "Blockchain permanence with NFT minting on Base L2",
+    "Chainlink CRE verifiable AI metrics with privacy-preserving attestation",
+    "Social features with likes, tips, follows, and paywall monetization",
+    "$STORY token economy with creator rewards",
+    "Dual authentication: Web3 wallet + Google OAuth",
+    "IPFS storage via Pinata for decentralized file persistence",
+    "React Native mobile app (iOS/Android)"
+  ],
+  "publicApiSurface": [
+    "POST /api/ai/transcribe - Convert audio to text",
+    "POST /api/ai/enhance - AI text enhancement",
+    "POST /api/ai/analyze - Extract story metadata and insights",
+    "POST /api/ai/reflection - Generate weekly reflections",
+    "GET /api/auth/nonce - Generate wallet signature nonce",
+    "POST /api/auth/login - Wallet authentication",
+    "POST /api/journal/save - Save story to database",
+    "GET /api/stories/[storyId]/metadata - Get story insights",
+    "POST /api/social/like - Like/unlike stories",
+    "POST /api/social/follow - Follow/unfollow users",
+    "POST /api/tip - Send $STORY tokens to creators",
+    "POST /api/paywall - Unlock premium content",
+    "POST /api/cre/trigger - Trigger Chainlink CRE verification",
+    "GET /api/cre/check - Check verification status",
+    "useVault() - Local vault encryption hook",
+    "useLocalStories() - Encrypted IndexedDB CRUD",
+    "useVerifiedMetrics() - CRE metrics polling hook",
+    "useIStoryToken() - ERC20 token interactions",
+    "useStoryNFT() - NFT minting and management",
+    "useStoryProtocol() - Tips and paywall contract"
+  ]
+}
